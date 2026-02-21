@@ -133,13 +133,13 @@ class AgentBuilder(ABC):
 
 **Why this design:**
 
-| Concern | Mechanism |
-|---------|-----------|
-| Consumers get a consistent API | `compile()` always returns `CompiledStateGraph` |
-| Subclasses can't accidentally break caching | `compile()` is non-overridable |
-| Static tooling catches mistakes | `@final` decorator |
-| Runtime catches mistakes too | `__init_subclass__` raises `TypeError` |
-| Subclasses focus on graph construction only | `_build()` is the single extension point |
+| Concern                                     | Mechanism                                       |
+| ------------------------------------------- | ----------------------------------------------- |
+| Consumers get a consistent API              | `compile()` always returns `CompiledStateGraph` |
+| Subclasses can't accidentally break caching | `compile()` is non-overridable                  |
+| Static tooling catches mistakes             | `@final` decorator                              |
+| Runtime catches mistakes too                | `__init_subclass__` raises `TypeError`          |
+| Subclasses focus on graph construction only | `_build()` is the single extension point        |
 
 ### 2. State Definitions
 
@@ -148,7 +148,7 @@ class AgentBuilder(ABC):
 Each sub-agent defines its **own** focused TypedDict. Do not create a monolithic "uber-state" shared across unrelated stages — it couples sub-agents and makes them harder to test independently.
 
 ```python
-# agents/viz_designer/schemas.py (excerpted)
+# agents/acme_agent/schemas.py (excerpted)
 from typing import Annotated, Any
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
@@ -215,10 +215,10 @@ class VizDesignerGraphState(TypedDict):
 
 **Why three TypedDicts?**
 
-| TypedDict | Purpose |
-|-----------|---------|
-| `Input` | Narrow contract for callers — only what they must provide |
-| `Output` | Narrow contract for callers — only what they receive back |
+| TypedDict    | Purpose                                                             |
+| ------------ | ------------------------------------------------------------------- |
+| `Input`      | Narrow contract for callers — only what they must provide           |
+| `Output`     | Narrow contract for callers — only what they receive back           |
 | `GraphState` | Internal superset — includes bridge fields for inter-node data flow |
 
 This pattern hides internal wiring (bridge fields like `selection_result`) from the public API while giving nodes full access to intermediate state.
@@ -293,10 +293,10 @@ result = await pipeline.ainvoke(
 
 For multi-stage agents, each sub-agent should have its **own focused state**. The parent graph orchestrates sub-agents using the LangGraph "invoke from a node" pattern: each node transforms parent state → subgraph state, invokes the subgraph, and transforms the result back into a parent state update.
 
-This is the actual pattern used by `VisualizationDesigner` (see `agents/src/agents/viz_designer/agent.py`):
+This is the actual pattern used by `AcmeAgent` (see `agents/src/agents/acme_agent/agent.py`):
 
 ```python
-# agents/viz_designer/agent.py (simplified — see actual implementation for full code)
+# agents/acme_agent/agent.py (simplified — see actual implementation for full code)
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -309,8 +309,8 @@ from langgraph.graph.state import CompiledStateGraph
 
 from agents.base import AgentBuilder
 from agents.models import AgentContext
-from agents.viz_designer.config import VisualizationDesignerSettings
-from agents.viz_designer.schemas import (
+from agents.acme_agent.config import AcmeAgentSettings
+from agents.acme_agent.schemas import (
     VizDesignerGraphState,
     VizDesignerInput,
     VizDesignerOutput,
@@ -320,11 +320,11 @@ from agents.viz_designer.schemas import (
 )
 
 if TYPE_CHECKING:
-    from xlake.api import XLakeClient
+    from acmestore.api import AcmeStoreClient
 
 
-class VisualizationDesigner(AgentBuilder):
-    """2-stage visualization pipeline: Selection -> Refinement.
+class AcmeAgent(AgentBuilder):
+    """2-stage interaction pipeline: Selection -> Refinement.
 
     Uses the LangGraph "invoke from a node" subgraph pattern so each
     sub-agent operates on its own focused state while the parent graph
@@ -338,12 +338,12 @@ class VisualizationDesigner(AgentBuilder):
 
     def __init__(
         self,
-        settings: VisualizationDesignerSettings,
-        xlake_client: XLakeClient | None = None,
+        settings: AcmeAgentSettings,
+        acmestore_client: AcmeStoreClient | None = None,
     ):
         super().__init__()
         self.settings = settings
-        self._xlake_client = xlake_client
+        self._acmestore_client = acmestore_client
         self._tools = self._build_tools()
 
     # ------------------------------------------------------------------
@@ -472,7 +472,7 @@ class VisualizationDesigner(AgentBuilder):
             response_format=VizSelectionResponseSchema,
             context_schema=AgentContext,
             debug=self.settings.debug,
-            name="viz_selection",
+            name="selection",
         )
 
     def _create_refinement_stage(self) -> CompiledStateGraph:
@@ -486,7 +486,7 @@ class VisualizationDesigner(AgentBuilder):
             response_format=VizRefinementResponseSchema,
             context_schema=AgentContext,
             debug=self.settings.debug,
-            name="viz_refinement",
+            name="refinement",
         )
 ```
 
@@ -509,43 +509,43 @@ class VisualizationDesigner(AgentBuilder):
 Coordinator agent managing multiple specialized agents:
 
 ```python
-# agents/viz_coordinator.py
+# agents/agent_coordinator.py
 from typing import Literal, List
 from langchain_openai import ChatOpenAI
 from langchain_core.runnables import Runnable
 from langgraph.graph import StateGraph, START, END
 
 from .base import AgentBuilder
-from .state import VisualizationState
-from .visualization_designer import VisualizationDesigner
+from .state import InteractionState
+from .visualization_designer import AcmeAgent
 from .chart_selector import ChartSelectionAgent
 
 
-class VizCoordinator(AgentBuilder):
+class AgentCoordinator(AgentBuilder):
     """
-    Supervisor agent coordinating multiple visualization specialists.
-    
+    Supervisor agent coordinating multiple interaction specialists.
+
     This agent implements the supervisor pattern:
     - Routes tasks to specialized agents
     - Aggregates results
     - Handles fallbacks
-    
+
     Use when:
     - Multiple specialized agents needed
     - Dynamic routing based on task type
     - Need to aggregate multiple agent outputs
     """
-    
+
     def __init__(
         self,
         supervisor_llm: ChatOpenAI,
-        designer_agent: VisualizationDesigner,
+        designer_agent: AcmeAgent,
         selector_agent: ChartSelectionAgent,
         verbose: bool = False,
     ):
         """
         Initialize coordinator with sub-agents.
-        
+
         Args:
             supervisor_llm: LLM for routing decisions
             designer_agent: Full pipeline agent for complex requests
@@ -556,28 +556,28 @@ class VizCoordinator(AgentBuilder):
         self.designer_agent = designer_agent
         self.selector_agent = selector_agent
         self.verbose = verbose
-        
+
         # Compile sub-agents
         self.designer_runnable = designer_agent.compile()
         self.selector_runnable = selector_agent.compile()
-        
+
         self._graph: Optional[Runnable] = None
-    
+
     def _build(self) -> CompiledStateGraph:
         """
         Build the supervisor graph with routing logic.
-        
+
         Returns:
             CompiledStateGraph: Compiled graph that routes to appropriate agent
         """
-        workflow = StateGraph(VisualizationState)
-        
+        workflow = StateGraph(InteractionState)
+
         # Add nodes
         workflow.add_node("supervisor", self._supervisor_node)
         workflow.add_node("designer", self._call_designer)
         workflow.add_node("selector", self._call_selector)
         workflow.add_node("aggregate", self._aggregate_results)
-        
+
         # Routing
         workflow.add_edge(START, "supervisor")
         workflow.add_conditional_edges(
@@ -591,34 +591,34 @@ class VizCoordinator(AgentBuilder):
         workflow.add_edge("designer", "aggregate")
         workflow.add_edge("selector", "aggregate")
         workflow.add_edge("aggregate", END)
-        
+
         return workflow.compile()
-    
-    def _supervisor_node(self, state: VisualizationState) -> dict:
+
+    def _supervisor_node(self, state: InteractionState) -> dict:
         """Supervisor analyzes task and decides routing"""
         messages = state["messages"]
         last_message = messages[-1].content if messages else ""
-        
+
         # Determine task complexity
-        complexity_prompt = f"""Analyze this visualization request:
+        complexity_prompt = f"""Analyze this interaction request:
 {last_message}
 
-Is this a simple chart selection or complex visualization design?
+Is this a simple chart selection or complex interaction design?
 Respond with: SIMPLE or COMPLEX"""
-        
+
         response = self.supervisor_llm.invoke([("human", complexity_prompt)])
-        
+
         task_type = "simple" if "SIMPLE" in response.content.upper() else "complex"
-        
+
         return {"metadata": {"task_type": task_type}}
-    
+
     def _route_task(
         self,
-        state: VisualizationState
+        state: InteractionState
     ) -> Literal["designer", "selector"]:
         """Route to appropriate agent based on task type"""
         task_type = state.get("metadata", {}).get("task_type", "simple")
-        
+
         if task_type == "complex":
             if self.verbose:
                 print("Routing to designer agent")
@@ -627,23 +627,23 @@ Respond with: SIMPLE or COMPLEX"""
             if self.verbose:
                 print("Routing to selector agent")
             return "selector"
-    
-    def _call_designer(self, state: VisualizationState) -> dict:
+
+    def _call_designer(self, state: InteractionState) -> dict:
         """Call full designer agent"""
         result = self.designer_runnable.invoke(state)
         return result
-    
-    def _call_selector(self, state: VisualizationState) -> dict:
+
+    def _call_selector(self, state: InteractionState) -> dict:
         """Call simple selector agent"""
         result = self.selector_runnable.invoke(state)
         return result
-    
-    def _aggregate_results(self, state: VisualizationState) -> dict:
+
+    def _aggregate_results(self, state: InteractionState) -> dict:
         """Aggregate and format final results"""
         # Add reasoning about routing decision
         task_type = state.get("metadata", {}).get("task_type", "unknown")
         reasoning = f"Routed to {task_type} agent based on task complexity analysis"
-        
+
         return {"reasoning": reasoning}
 ```
 
@@ -655,8 +655,8 @@ Wire all agents through DI container:
 # containers.py
 from dependency_injector import containers, providers
 from agents.chart_selector import ChartSelectionAgent
-from agents.visualization_designer import VisualizationDesigner
-from agents.viz_coordinator import VizCoordinator
+from agents.visualization_designer import AcmeAgent
+from agents.agent_coordinator import AgentCoordinator
 from agents.config import get_agent_settings
 from langchain_openai import ChatOpenAI
 
@@ -664,20 +664,20 @@ from langchain_openai import ChatOpenAI
 class AgentsContainer(containers.DeclarativeContainer):
     """
     Container for all agent dependencies.
-    
+
     This container manages:
     - Configuration settings
     - Shared resources (LLMs, vector stores)
     - Tool creation
     - Agent builders
     """
-    
+
     # Configuration
     config = providers.Configuration()
     agent_settings = providers.Singleton(get_agent_settings)
-    
+
     # Shared Resources (Singletons)
-    
+
     # Main LLM for complex reasoning
     main_llm = providers.Singleton(
         ChatOpenAI,
@@ -686,7 +686,7 @@ class AgentsContainer(containers.DeclarativeContainer):
         api_key=agent_settings.provided.openai_api_key,
         max_retries=3,
     )
-    
+
     # Fast LLM for simple tasks
     fast_llm = providers.Singleton(
         ChatOpenAI,
@@ -695,42 +695,42 @@ class AgentsContainer(containers.DeclarativeContainer):
         api_key=agent_settings.provided.openai_api_key,
         max_retries=3,
     )
-    
+
     # Vector store for RAG
     vector_store = providers.Singleton(
         create_vector_store,
         embedding_model=agent_settings.provided.embedding_model,
     )
-    
+
     # Tools (Factories)
-    
-    search_viz_rules = providers.Factory(
-        create_search_viz_rules_tool,
+
+    search_rules = providers.Factory(
+        create_search_rules_tool,
         vector_store=vector_store,
     )
-    
+
     analyze_schema = providers.Factory(
         create_analyze_schema_tool,
     )
-    
+
     validate_chart = providers.Factory(
         create_validate_chart_tool,
     )
-    
+
     # Create tool lists for different agents
     selector_tools = providers.List(
-        search_viz_rules,
+        search_rules,
         analyze_schema,
     )
-    
+
     designer_tools = providers.List(
-        search_viz_rules,
+        search_rules,
         analyze_schema,
         validate_chart,
     )
-    
+
     # Agents (Factories - new instance per request)
-    
+
     chart_selection_agent = providers.Factory(
         ChartSelectionAgent,
         llm=fast_llm,  # Use fast LLM for simple selection
@@ -738,18 +738,18 @@ class AgentsContainer(containers.DeclarativeContainer):
         max_iterations=agent_settings.provided.max_iterations,
         verbose=agent_settings.provided.verbose,
     )
-    
+
     visualization_designer = providers.Factory(
-        VisualizationDesigner,
+        AcmeAgent,
         llm=main_llm,  # Use main LLM for complex design
         chart_selector=chart_selection_agent,
         tools=designer_tools,
         max_refinement_iterations=3,
         verbose=agent_settings.provided.verbose,
     )
-    
-    viz_coordinator = providers.Factory(
-        VizCoordinator,
+
+    agent_coordinator = providers.Factory(
+        AgentCoordinator,
         supervisor_llm=fast_llm,  # Fast routing decisions
         designer_agent=visualization_designer,
         selector_agent=chart_selection_agent,
@@ -760,15 +760,15 @@ class AgentsContainer(containers.DeclarativeContainer):
 # Alternative: Minimal container for testing
 class TestAgentsContainer(containers.DeclarativeContainer):
     """Simplified container for testing with mocks"""
-    
+
     # Mock LLM
     llm = providers.Singleton(
         lambda: MockChatOpenAI(model="gpt-4"),
     )
-    
+
     # Mock tools
     tools = providers.List()
-    
+
     # Agent with mocked dependencies
     chart_selection_agent = providers.Factory(
         ChartSelectionAgent,
@@ -789,8 +789,8 @@ from dependency_injector.wiring import inject, Provide
 from contextlib import asynccontextmanager
 
 from containers import AgentsContainer
-from agents.viz_coordinator import VizCoordinator
-from agents.state import VisualizationState
+from agents.agent_coordinator import AgentCoordinator
+from agents.state import InteractionState
 
 
 router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
@@ -800,11 +800,11 @@ router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
 @inject
 async def create_visualization(
     request: VisualizationRequest,
-    coordinator: VizCoordinator = Depends(Provide[AgentsContainer.viz_coordinator]),
+    coordinator: AgentCoordinator = Depends(Provide[AgentsContainer.agent_coordinator]),
 ):
     """
-    Create visualization using coordinator agent.
-    
+    Create interaction using coordinator agent.
+
     The coordinator will:
     1. Analyze request complexity
     2. Route to appropriate agent
@@ -813,32 +813,32 @@ async def create_visualization(
     try:
         # Build the agent graph
         agent_graph = coordinator.compile()
-        
+
         # Prepare initial state
-        initial_state: VisualizationState = {
+        initial_state: InteractionState = {
             "messages": [("human", request.query)],
             "data_schema": request.data_schema,
             "sample_data": request.sample_data,
             "reasoning": None,
         }
-        
+
         # Invoke agent
         result = await agent_graph.ainvoke(initial_state)
-        
+
         # Extract chart config
         chart_config = result.get("chart_config")
-        
+
         if not chart_config:
             raise HTTPException(
                 status_code=500,
                 detail="Agent failed to generate chart configuration"
             )
-        
+
         return {
             "chart_config": chart_config,
             "reasoning": result.get("reasoning"),
         }
-    
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -856,20 +856,20 @@ async def select_chart(
 ):
     """
     Simple chart selection endpoint using selector agent directly.
-    
+
     Bypasses coordinator for known simple tasks.
     """
     agent = selector.compile()
-    
-    initial_state: VisualizationState = {
+
+    initial_state: InteractionState = {
         "messages": [("human", request.query)],
         "data_schema": request.data_schema,
         "sample_data": request.sample_data,
         "reasoning": None,
     }
-    
+
     result = await agent.ainvoke(initial_state)
-    
+
     return {
         "chart_type": result.get("chart_type"),
         "chart_config": result.get("chart_config"),
@@ -898,7 +898,7 @@ container = AgentsContainer()
 async def lifespan(app: FastAPI):
     """
     Application lifecycle manager.
-    
+
     Handles:
     - Container wiring to modules
     - Shared resource initialization (if needed)
@@ -910,16 +910,16 @@ async def lifespan(app: FastAPI):
             "api.routes.charts",
         ]
     )
-    
+
     yield
-    
+
     # Cleanup on shutdown
     container.unwire()
 
 
 # Create FastAPI app
 app = FastAPI(
-    title="ActBI Visualization API",
+    title="Acme Inc. Visualization API",
     lifespan=lifespan,
 )
 
@@ -943,15 +943,15 @@ from unittest.mock import AsyncMock, Mock, patch
 from dependency_injector import containers, providers
 
 from agents.chart_selector import ChartSelectionAgent
-from agents.state import VisualizationState
+from agents.state import InteractionState
 
 
 class MockChatOpenAI:
     """Mock LLM for testing"""
-    
+
     def __init__(self, model: str):
         self.model = model
-    
+
     def invoke(self, messages):
         """Return mock response"""
         return Mock(content='{"chart_type": "bar", "config": {}}')
@@ -959,17 +959,17 @@ class MockChatOpenAI:
 
 class TestChartSelectionAgent:
     """Test suite for chart selection agent"""
-    
+
     @pytest.fixture
     def mock_llm(self):
         """Provide mock LLM"""
         return MockChatOpenAI(model="gpt-4")
-    
+
     @pytest.fixture
     def mock_tools(self):
         """Provide mock tools"""
         return []
-    
+
     @pytest.fixture
     def agent(self, mock_llm, mock_tools):
         """Provide agent with mocked dependencies"""
@@ -978,31 +978,31 @@ class TestChartSelectionAgent:
             tools=mock_tools,
             verbose=True,
         )
-    
+
     def test_agent_initialization(self, agent):
         """Test agent initializes correctly"""
         assert agent.llm is not None
         assert agent.tools == []
         assert agent.max_iterations == 10
-    
+
     def test_compile_returns_runnable(self, agent):
         """Test compile() returns a CompiledStateGraph (Runnable)"""
         runnable = agent.compile()
         assert runnable is not None
         assert hasattr(runnable, 'invoke')
         assert hasattr(runnable, 'ainvoke')
-    
+
     @pytest.mark.asyncio
     async def test_agent_invocation(self, agent):
         """Test agent can be invoked"""
         runnable = agent.compile()
-        
-        initial_state: VisualizationState = {
+
+        initial_state: InteractionState = {
             "messages": [("human", "Create a bar chart")],
             "data_schema": {"x": "string", "y": "number"},
             "sample_data": [{"x": "A", "y": 10}],
         }
-        
+
         # Mock the actual agent execution
         with patch.object(runnable, 'ainvoke', new=AsyncMock(
             return_value={"chart_type": "bar"}
@@ -1011,24 +1011,24 @@ class TestChartSelectionAgent:
             assert result["chart_type"] == "bar"
 
 
-class TestVisualizationDesigner:
-    """Test suite for visualization designer"""
-    
+class TestAcmeAgent:
+    """Test suite for AcmeAgent"""
+
     @pytest.fixture
     def designer(self):
         """Create designer with test settings"""
-        settings = VisualizationDesignerSettings(
+        settings = AcmeAgentSettings(
             default_model="gpt-4o-mini",
             debug=True,
         )
-        return VisualizationDesigner(settings=settings)
-    
+        return AcmeAgent(settings=settings)
+
     def test_compile_returns_graph(self, designer):
         """Test compile() returns a CompiledStateGraph"""
         graph = designer.compile()
         assert graph is not None
         assert hasattr(graph, 'ainvoke')
-    
+
     def test_compile_is_cached(self, designer):
         """Test compile() returns same instance on repeated calls"""
         graph1 = designer.compile()
@@ -1051,10 +1051,10 @@ class TestAgentBuilderGuard:
 
 # Integration tests
 @pytest.mark.asyncio
-async def test_end_to_end_visualization_flow():
+async def test_end_to_end_interaction_flow():
     """
-    Integration test for complete visualization flow.
-    
+    Integration test for complete interaction flow.
+
     Tests:
     - Container wiring
     - Agent composition
@@ -1064,13 +1064,13 @@ async def test_end_to_end_visualization_flow():
     # Create test container
     from tests.containers import TestApplicationContainer
     container = TestApplicationContainer()
-    
+
     # Get coordinator
-    coordinator = container.viz_coordinator()
-    
+    coordinator = container.agent_coordinator()
+
     # Compile graph
     graph = coordinator.compile()
-    
+
     # Test invocation
     result = await graph.ainvoke({
         "messages": [("human", "Create a bar chart")],
@@ -1078,7 +1078,7 @@ async def test_end_to_end_visualization_flow():
         "sample_data": [{"x": "A", "y": 10}],
         "reasoning": None,
     })
-    
+
     # Verify result
     assert result.get("chart_config") is not None
     assert result.get("reasoning") is not None
@@ -1088,14 +1088,14 @@ async def test_end_to_end_visualization_flow():
 
 For complex agents, use Pydantic Settings to encapsulate all configuration in a single object. This provides type safety, validation, and a clean agent interface.
 
-**Convention**: All agent settings use the `AGENT_<AGENT_NAME>_` prefix for environment variables to maintain consistency across the codebase (e.g., `AGENT_VIZ_DESIGNER_`, `AGENT_CHART_SELECTOR_`).
+**Convention**: All agent settings use the `AGENT_<AGENT_NAME>_` prefix for environment variables to maintain consistency across the codebase (e.g., `AGENT_ACME_`, `AGENT_CHART_SELECTOR_`).
 
 #### Pattern: Agent-Specific Settings
 
 Each agent gets its own settings class that includes all configuration:
 
 ```python
-# agents/viz_designer/config.py
+# agents/acme_agent/config.py
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
@@ -1104,69 +1104,69 @@ from typing import Optional
 
 class StageSettings(BaseModel):
     """Configuration for a single pipeline stage."""
-    
+
     model: Optional[str] = None  # None = use pipeline default
     temperature: float = 0.0
     max_tokens: int = 4000
     max_iterations: int = 5
-    
+
     class Config:
         # Allow arbitrary types for prompts, tools
         arbitrary_types_allowed = True
 
 
-class VisualizationDesignerSettings(BaseSettings):
+class AcmeAgentSettings(BaseSettings):
     """
-    Complete configuration for VisualizationDesigner agent.
-    
+    Complete configuration for AcmeAgent agent.
+
     This encapsulates ALL configuration for the agent:
     - Models and LLM parameters
     - Pipeline behavior
     - Stage-specific overrides
     - Debug settings
-    
-    Loaded from AGENT_VIZ_DESIGNER_* environment variables.
-    
+
+    Loaded from AGENT_ACME_* environment variables.
+
     Example .env:
-        AGENT_VIZ_DESIGNER_DEFAULT_MODEL=anthropic:claude-sonnet-4-20250514
-        AGENT_VIZ_DESIGNER_DEBUG=true
-        AGENT_VIZ_DESIGNER_SELECTION_MODEL=gpt-4
+        AGENT_ACME_DEFAULT_MODEL=anthropic:claude-sonnet-4-20250514
+        AGENT_ACME_DEBUG=true
+        AGENT_ACME_SELECTION_MODEL=gpt-4
     """
-    
+
     model_config = SettingsConfigDict(
-        env_prefix="AGENT_VIZ_DESIGNER_",
+        env_prefix="AGENT_ACME_",
         env_file=".env",
         case_sensitive=False,
     )
-    
+
     # Pipeline-wide defaults
     default_model: str = "gpt-4"
     temperature: float = 0.0
     max_tokens: int = 4000
     debug: bool = False
-    
+
     # Stage-specific overrides
     selection_model: Optional[str] = None
     selection_temperature: Optional[float] = None
     selection_max_iterations: int = 5
-    
+
     refinement_model: Optional[str] = None
     refinement_temperature: Optional[float] = None
     refinement_max_iterations: int = 3
-    
+
     styling_model: Optional[str] = None
     styling_temperature: Optional[float] = None
-    
+
     implementation_model: Optional[str] = None
     implementation_temperature: Optional[float] = None
-    
+
     def get_stage_settings(self, stage: str) -> StageSettings:
         """
         Get settings for a specific stage, with fallback to defaults.
-        
+
         Args:
             stage: One of "selection", "refinement", "styling", "implementation"
-            
+
         Returns:
             StageSettings with stage-specific overrides applied
         """
@@ -1175,9 +1175,9 @@ class VisualizationDesignerSettings(BaseSettings):
         temperature = getattr(self, f"{stage}_temperature")
         if temperature is None:
             temperature = self.temperature
-        
+
         max_iterations = getattr(self, f"{stage}_max_iterations", 5)
-        
+
         return StageSettings(
             model=model,
             temperature=temperature,
@@ -1187,34 +1187,34 @@ class VisualizationDesignerSettings(BaseSettings):
 
 
 @lru_cache
-def get_viz_designer_settings() -> VisualizationDesignerSettings:
+def get_acme_agent_settings() -> AcmeAgentSettings:
     """
-    Get cached visualization designer settings.
-    
+    Get cached AcmeAgent settings.
+
     Called once per process. All configuration loaded from environment.
     """
-    return VisualizationDesignerSettings()
+    return AcmeAgentSettings()
 
 
 # Example: Another agent's settings following the same pattern
 class ChartSelectorSettings(BaseSettings):
     """
     Configuration for ChartSelectionAgent.
-    
+
     Loaded from AGENT_CHART_SELECTOR_* environment variables.
-    
+
     Example .env:
         AGENT_CHART_SELECTOR_MODEL=gpt-4o-mini
         AGENT_CHART_SELECTOR_TEMPERATURE=0.0
         AGENT_CHART_SELECTOR_MAX_ITERATIONS=5
     """
-    
+
     model_config = SettingsConfigDict(
         env_prefix="AGENT_CHART_SELECTOR_",
         env_file=".env",
         case_sensitive=False,
     )
-    
+
     model: str = "gpt-4o-mini"
     temperature: float = 0.0
     max_iterations: int = 5
@@ -1232,65 +1232,65 @@ def get_chart_selector_settings() -> ChartSelectorSettings:
 The agent takes only the settings object as its parameter:
 
 ```python
-# agents/viz_designer/agent.py
+# agents/acme_agent/agent.py
 from typing import Optional
 from langchain_core.runnables import Runnable
 from langgraph.graph import StateGraph, START, END
 
 from agents.base import AgentBuilder
-from agents.viz_designer.config import VisualizationDesignerSettings
-from agents.viz_designer.state import VisualizationState
+from agents.acme_agent.config import AcmeAgentSettings
+from agents.acme_agent.state import InteractionState
 
 
-class VisualizationDesigner(AgentBuilder):
+class AcmeAgent(AgentBuilder):
     """
-    Visualization designer with multi-stage pipeline.
-    
-    Configuration is fully encapsulated in VisualizationDesignerSettings.
+    AcmeAgent with multi-stage pipeline.
+
+    Configuration is fully encapsulated in AcmeAgentSettings.
     All dependencies (LLMs, tools) are created internally based on settings.
-    
+
     Directory structure:
-        agents/viz_designer/
+        agents/acme_agent/
             __init__.py
             agent.py         # This file - the builder
-            config.py        # VisualizationDesignerSettings
-            state.py         # VisualizationState
+            config.py        # AcmeAgentSettings
+            state.py         # InteractionState
             prompts.py       # Prompt templates
             nodes.py         # Node functions (optional)
     """
-    
+
     def __init__(
         self,
-        settings: VisualizationDesignerSettings,
+        settings: AcmeAgentSettings,
     ):
         """
         Initialize designer with complete configuration.
-        
+
         Args:
             settings: Complete configuration for the agent including
                      models, temperatures, stage overrides, etc.
         """
         super().__init__()
         self.settings = settings
-        
+
         # Internal state
         self._refinement_count = 0
-    
+
     def _build(self) -> CompiledStateGraph:
         """
-        Build the multi-stage visualization pipeline using StateGraph.
-        
+        Build the multi-stage interaction pipeline using StateGraph.
+
         Returns:
-            CompiledStateGraph: Compiled graph that processes VisualizationState
+            CompiledStateGraph: Compiled graph that processes InteractionState
         """
-        workflow = StateGraph(VisualizationState)
-        
+        workflow = StateGraph(InteractionState)
+
         # Add nodes for each stage
         workflow.add_node("select_chart", self._select_chart_node)
         workflow.add_node("refine_chart", self._refine_chart_node)
         workflow.add_node("style_chart", self._style_chart_node)
         workflow.add_node("implement_chart", self._implement_chart_node)
-        
+
         # Add edges
         workflow.add_edge(START, "select_chart")
         workflow.add_edge("select_chart", "refine_chart")
@@ -1304,79 +1304,79 @@ class VisualizationDesigner(AgentBuilder):
         )
         workflow.add_edge("style_chart", "implement_chart")
         workflow.add_edge("implement_chart", END)
-        
+
         # Compile with debug mode from settings
         return workflow.compile(debug=self.settings.debug)
-    
-    def _select_chart_node(self, state: VisualizationState) -> dict:
+
+    def _select_chart_node(self, state: InteractionState) -> dict:
         """Node: Select initial chart type"""
         from langchain.chat_models import init_chat_model
-        
+
         # Get stage-specific settings
         stage_settings = self.settings.get_stage_settings("selection")
-        
+
         # Initialize LLM for this stage
         llm = init_chat_model(
             model=stage_settings.model,
             temperature=stage_settings.temperature,
             max_tokens=stage_settings.max_tokens,
         )
-        
+
         # Selection logic using stage-specific LLM
         # ...
-        
+
         return {
             "chart_type": "bar",
             "reasoning": f"Selected bar chart using {stage_settings.model}",
         }
-    
-    def _refine_chart_node(self, state: VisualizationState) -> dict:
+
+    def _refine_chart_node(self, state: InteractionState) -> dict:
         """Node: Refine chart configuration"""
         from langchain.chat_models import init_chat_model
-        
+
         # Get stage-specific settings
         stage_settings = self.settings.get_stage_settings("refinement")
-        
+
         # Initialize LLM for this stage
         llm = init_chat_model(
             model=stage_settings.model,
             temperature=stage_settings.temperature,
             max_tokens=stage_settings.max_tokens,
         )
-        
+
         self._refinement_count += 1
-        
+
         # Refinement logic
         # ...
-        
+
         return {
             "chart_config": {"refined": True},
             "reasoning": f"Refined using {stage_settings.model}",
         }
-    
-    def _style_chart_node(self, state: VisualizationState) -> dict:
+
+    def _style_chart_node(self, state: InteractionState) -> dict:
         """Node: Apply styling"""
         stage_settings = self.settings.get_stage_settings("styling")
         # Styling logic
         return {"chart_config": state["chart_config"]}
-    
-    def _implement_chart_node(self, state: VisualizationState) -> dict:
+
+    def _implement_chart_node(self, state: InteractionState) -> dict:
         """Node: Generate implementation code"""
         stage_settings = self.settings.get_stage_settings("implementation")
         # Implementation logic
         return {"chart_config": state["chart_config"]}
-    
-    def _should_continue_refining(self, state: VisualizationState) -> str:
+
+    def _should_continue_refining(self, state: InteractionState) -> str:
         """Conditional: Check if more refinement needed"""
         stage_settings = self.settings.get_stage_settings("refinement")
-        
+
         if self._refinement_count >= stage_settings.max_iterations:
             return "style"
-        
+
         # Check if refinement needed
         if state.get("needs_refinement"):
             return "continue"
-        
+
         return "style"
 ```
 
@@ -1387,26 +1387,26 @@ The container only needs to provide the settings object:
 ```python
 # containers.py
 from dependency_injector import containers, providers
-from agents.viz_designer.agent import VisualizationDesigner
-from agents.viz_designer.config import get_viz_designer_settings
+from agents.acme_agent.agent import AcmeAgent
+from agents.acme_agent.config import get_acme_agent_settings
 
 
 class AgentsContainer(containers.DeclarativeContainer):
     """
     Container for agent dependencies.
-    
+
     With composite settings pattern, the container is simplified:
     - Provide settings objects (Singletons)
     - Agents create their own internal dependencies
     """
-    
+
     # Settings objects (Singletons - loaded once from env)
-    viz_designer_settings = providers.Singleton(get_viz_designer_settings)
-    
+    acme_agent_settings = providers.Singleton(get_acme_agent_settings)
+
     # Agent takes only settings (Factory - new instance per request)
-    viz_designer = providers.Factory(
-        VisualizationDesigner,
-        settings=viz_designer_settings,
+    acme_agent = providers.Factory(
+        AcmeAgent,
+        settings=acme_agent_settings,
     )
 
 
@@ -1415,20 +1415,20 @@ class AgentsContainer(containers.DeclarativeContainer):
 @inject
 async def create_visualization(
     request: VisualizationRequest,
-    designer: VisualizationDesigner = Depends(
-        Provide[AgentsContainer.viz_designer]
+    designer: AcmeAgent = Depends(
+        Provide[AgentsContainer.acme_agent]
     ),
 ):
-    """Create visualization using designer agent"""
+    """Create interaction using designer agent"""
     graph = designer.compile()
-    
+
     result = await graph.ainvoke({
         "messages": [("human", request.query)],
         "data_schema": request.data_schema,
         "sample_data": request.sample_data,
         "reasoning": None,
     })
-    
+
     return {
         "chart_config": result["chart_config"],
         "reasoning": result["reasoning"],
@@ -1440,55 +1440,55 @@ async def create_visualization(
 If you need to inject external dependencies (like clients) alongside settings:
 
 ```python
-# agents/viz_designer/agent.py
-from xlake.client import XLakeClient
+# agents/acme_agent/agent.py
+from acmestore.client import AcmeStoreClient
 
 
-class VisualizationDesigner(AgentBuilder):
+class AcmeAgent(AgentBuilder):
     """
     Designer with both settings and external dependencies.
     """
-    
+
     def __init__(
         self,
-        settings: VisualizationDesignerSettings,
-        xlake_client: XLakeClient,  # External dependency
+        settings: AcmeAgentSettings,
+        acmestore_client: AcmeStoreClient,  # External dependency
     ):
         """
         Initialize with settings and external dependencies.
-        
+
         Args:
             settings: Complete agent configuration
-            xlake_client: External XLake client (managed by container)
+            acmestore_client: External AcmeStore client (managed by container)
         """
         super().__init__()
         self.settings = settings
-        self.xlake_client = xlake_client
-    
+        self.acmestore_client = acmestore_client
+
     def _build(self) -> CompiledStateGraph:
         """Build graph using both settings and external dependencies"""
         # Agent can use self.settings for LLM config
-        # and self.xlake_client for external operations
+        # and self.acmestore_client for external operations
         # ...
 
 
 # Container
 class AgentsContainer(containers.DeclarativeContainer):
     # Shared external dependencies
-    xlake_client = providers.Singleton(
-        XLakeClient,
-        base_url=config.xlake_base_url,
-        api_key=config.xlake_api_key,
+    acmestore_client = providers.Singleton(
+        AcmeStoreClient,
+        base_url=config.acmestore_base_url,
+        api_key=config.acmestore_api_key,
     )
-    
+
     # Settings
-    viz_designer_settings = providers.Singleton(get_viz_designer_settings)
-    
+    acme_agent_settings = providers.Singleton(get_acme_agent_settings)
+
     # Agent gets both
-    viz_designer = providers.Factory(
-        VisualizationDesigner,
-        settings=viz_designer_settings,
-        xlake_client=xlake_client,
+    acme_agent = providers.Factory(
+        AcmeAgent,
+        settings=acme_agent_settings,
+        acmestore_client=acmestore_client,
     )
 ```
 
@@ -1506,11 +1506,11 @@ class AgentsContainer(containers.DeclarativeContainer):
 
 ```
 agents/
-├── viz_designer/
-│   ├── __init__.py              # Exports VisualizationDesigner
-│   ├── agent.py                 # VisualizationDesigner class (builder)
-│   ├── config.py                # VisualizationDesignerSettings
-│   ├── state.py                 # VisualizationState
+├── acme_agent/
+│   ├── __init__.py              # Exports AcmeAgent
+│   ├── agent.py                 # AcmeAgent class (builder)
+│   ├── config.py                # AcmeAgentSettings
+│   ├── state.py                 # InteractionState
 │   ├── prompts.py               # Prompt templates
 │   └── nodes.py                 # Optional: node functions
 │
@@ -1526,58 +1526,58 @@ agents/
 #### Testing with Composite Settings
 
 ```python
-# tests/test_viz_designer.py
+# tests/test_acme_agent.py
 import pytest
-from agents.viz_designer.agent import VisualizationDesigner
-from agents.viz_designer.config import VisualizationDesignerSettings
+from agents.acme_agent.agent import AcmeAgent
+from agents.acme_agent.config import AcmeAgentSettings
 
 
-class TestVisualizationDesigner:
-    """Test suite for visualization designer"""
-    
+class TestAcmeAgent:
+    """Test suite for AcmeAgent"""
+
     @pytest.fixture
     def test_settings(self):
         """Provide test settings without env vars"""
-        return VisualizationDesignerSettings(
+        return AcmeAgentSettings(
             default_model="gpt-4",
             selection_model="gpt-4o-mini",  # Fast model for selection
             debug=True,
             selection_max_iterations=2,
             refinement_max_iterations=1,
         )
-    
+
     @pytest.fixture
     def designer(self, test_settings):
         """Provide designer with test settings"""
-        return VisualizationDesigner(settings=test_settings)
-    
+        return AcmeAgent(settings=test_settings)
+
     def test_designer_initialization(self, designer, test_settings):
         """Test designer initializes with settings"""
         assert designer.settings == test_settings
         assert designer.settings.debug is True
-    
+
     def test_stage_settings(self, test_settings):
         """Test stage-specific settings resolution"""
         selection = test_settings.get_stage_settings("selection")
         assert selection.model == "gpt-4o-mini"  # Override
         assert selection.max_iterations == 2
-        
+
         refinement = test_settings.get_stage_settings("refinement")
         assert refinement.model == "gpt-4"  # Falls back to default
         assert refinement.max_iterations == 1
-    
+
     @pytest.mark.asyncio
     async def test_designer_invocation(self, designer):
         """Test designer can be invoked"""
         graph = designer.compile()
-        
+
         result = await graph.ainvoke({
             "messages": [("human", "Create a bar chart")],
             "data_schema": {"x": "string", "y": "number"},
             "sample_data": [{"x": "A", "y": 10}],
             "reasoning": None,
         })
-        
+
         assert result["chart_type"] is not None
         assert result["reasoning"] is not None
 ```
@@ -1586,12 +1586,12 @@ class TestVisualizationDesigner:
 
 Tools often have external dependencies (APIs, clients, vector stores) and configuration. Use the builder pattern for tools just like agents, with settings encapsulation and dependency injection.
 
-**Convention**: All tool settings use the `TOOL_<TOOL_NAME>_` prefix for environment variables (e.g., `TOOL_VIZ_SEARCH_`, `TOOL_WEATHER_API_`).
+**Convention**: All tool settings use the `TOOL_<TOOL_NAME>_` prefix for environment variables (e.g., `TOOL_RULES_SEARCH_`, `TOOL_WEATHER_API_`).
 
 #### Tool Builder Base Class
 
 Define an abstract base class that all tool builders must extend (follows the
-same pattern as ``AgentBuilder``):
+same pattern as `AgentBuilder`):
 
 ```python
 # tools/base.py
@@ -1671,71 +1671,71 @@ class ToolBuilder(ABC):
 Each tool gets its own settings class and directory:
 
 ```python
-# tools/viz_search/config.py
+# tools/rules_search/config.py
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 from typing import Optional
 
 
-class VizSearchToolSettings(BaseSettings):
+class RulesSearchToolSettings(BaseSettings):
     """
-    Configuration for visualization design rules search tool.
-    
-    This tool searches a vector store for relevant visualization
+    Configuration for interaction design rules search tool.
+
+    This tool searches a vector store for relevant interaction
     design guidelines based on data characteristics and user intent.
-    
-    Loaded from TOOL_VIZ_SEARCH_* environment variables.
-    
+
+    Loaded from TOOL_RULES_SEARCH_* environment variables.
+
     Example .env:
-        TOOL_VIZ_SEARCH_COLLECTION_NAME=viz_design_rules
-        TOOL_VIZ_SEARCH_TOP_K=5
-        TOOL_VIZ_SEARCH_SCORE_THRESHOLD=0.7
-        TOOL_VIZ_SEARCH_RERANK=true
+        TOOL_RULES_SEARCH_COLLECTION_NAME=design_rules
+        TOOL_RULES_SEARCH_TOP_K=5
+        TOOL_RULES_SEARCH_SCORE_THRESHOLD=0.7
+        TOOL_RULES_SEARCH_RERANK=true
     """
-    
+
     model_config = SettingsConfigDict(
-        env_prefix="TOOL_VIZ_SEARCH_",
+        env_prefix="TOOL_RULES_SEARCH_",
         env_file=".env",
         case_sensitive=False,
     )
-    
+
     # Vector store configuration
-    collection_name: str = "viz_design_rules"
+    collection_name: str = "design_rules"
     top_k: int = Field(default=5, ge=1, le=20)
     score_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    
+
     # Search behavior
     rerank: bool = True
     max_retries: int = 3
     timeout: float = 10.0
-    
+
     # Embedding configuration
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
-    
+
     # Tool metadata
-    tool_name: str = "search_viz_design_rules"
-    tool_description: str = """Search visualization design rules and best practices.
-    
+    tool_name: str = "search_design_rules"
+    tool_description: str = """Search interaction design rules and best practices.
+
 Use this tool when you need to:
 - Find the best chart type for specific data characteristics
-- Learn about visualization design principles
+- Learn about interaction design principles
 - Understand when to use different chart types
 - Get guidance on data encoding, axes, colors, etc.
 
 Args:
     query: Natural language description of what you're looking for
-    
+
 Returns:
     Relevant design rules and guidelines with source citations
 """
 
 
 @lru_cache
-def get_viz_search_tool_settings() -> VizSearchToolSettings:
+def get_rules_search_tool_settings() -> RulesSearchToolSettings:
     """Get cached viz search tool settings."""
-    return VizSearchToolSettings()
+    return RulesSearchToolSettings()
 ```
 
 #### Tool Implementation with Composite Config
@@ -1743,37 +1743,37 @@ def get_viz_search_tool_settings() -> VizSearchToolSettings:
 The tool builder takes settings and external dependencies:
 
 ```python
-# tools/viz_search/tool.py
+# tools/rules_search/tool.py
 from typing import Optional
 from langchain_core.tools import BaseTool, tool
 from langchain_core.vectorstores import VectorStore
 
 from tools.base import ToolBuilder
-from tools.viz_search.config import VizSearchToolSettings
+from tools.rules_search.config import RulesSearchToolSettings
 
 
-class VizSearchTool(ToolBuilder):
+class RulesSearchTool(ToolBuilder):
     """
-    Visualization design rules search tool.
-    
-    Searches a vector store for relevant visualization guidelines
+    Interaction design rules search tool.
+
+    Searches a vector store for relevant interaction guidelines
     based on natural language queries.
-    
+
     Directory structure:
-        tools/viz_search/
+        tools/rules_search/
             __init__.py
             tool.py         # This file - the builder
-            config.py       # VizSearchToolSettings
+            config.py       # RulesSearchToolSettings
     """
-    
+
     def __init__(
         self,
-        settings: VizSearchToolSettings,
+        settings: RulesSearchToolSettings,
         vector_store: VectorStore,  # External dependency
     ):
         """
         Initialize search tool with settings and dependencies.
-        
+
         Args:
             settings: Complete tool configuration
             vector_store: Vector store instance (managed by container)
@@ -1781,43 +1781,43 @@ class VizSearchTool(ToolBuilder):
         super().__init__()  # Initialize base class (sets up caching)
         self.settings = settings
         self.vector_store = vector_store
-    
+
     def _build(self) -> BaseTool:
         """
         Build the search tool.
-        
+
         Implements the ToolBuilder._build() hook. Called by compile()
         and the result is cached automatically.
-        
+
         Returns:
             BaseTool: Configured search tool ready to bind to agents
         """
         # Create the tool using @tool decorator with closure
         settings = self.settings
         vector_store = self.vector_store
-        
+
         @tool(name=settings.tool_name)
-        def search_viz_design_rules(query: str) -> str:
+        def search_design_rules(query: str) -> str:
             # Tool description from settings
             f"""{settings.tool_description}"""
-            
+
             try:
                 # Search vector store with settings-based parameters
                 results = vector_store.similarity_search_with_score(
                     query,
                     k=settings.top_k,
                 )
-                
+
                 # Filter by score threshold
                 filtered_results = [
-                    (doc, score) 
-                    for doc, score in results 
+                    (doc, score)
+                    for doc, score in results
                     if score >= settings.score_threshold
                 ]
-                
+
                 if not filtered_results:
                     return f"No design rules found matching '{query}' (threshold: {settings.score_threshold})"
-                
+
                 # Format results
                 formatted = []
                 for i, (doc, score) in enumerate(filtered_results, 1):
@@ -1826,16 +1826,16 @@ class VizSearchTool(ToolBuilder):
                         f"[Result {i} - Score: {score:.2f} - Source: {source}]\n"
                         f"{doc.page_content}"
                     )
-                
+
                 return "\n\n---\n\n".join(formatted)
-                
+
             except Exception as e:
                 return f"Search failed: {str(e)}"
-        
+
         # Override the docstring with settings value
-        search_viz_design_rules.__doc__ = settings.tool_description
-        
-        return search_viz_design_rules
+        search_design_rules.__doc__ = settings.tool_description
+
+        return search_design_rules
 
 
 # Example: API-based tool with retry logic
@@ -1843,7 +1843,7 @@ class WeatherAPITool(ToolBuilder):
     """
     Weather API tool with retry and caching.
     """
-    
+
     def __init__(
         self,
         settings: WeatherAPIToolSettings,
@@ -1852,26 +1852,26 @@ class WeatherAPITool(ToolBuilder):
         super().__init__()  # Initialize base class (sets up caching)
         self.settings = settings
         self.http_client = http_client
-    
+
     def _build(self) -> BaseTool:
         """Build weather API tool.
-        
+
         Implements the ToolBuilder._build() hook. Called by compile()
         and the result is cached automatically.
         """
         settings = self.settings
         http_client = self.http_client
-            
+
             @tool(name=settings.tool_name)
             async def get_weather(location: str) -> str:
                 """Get current weather for a location.
-                
+
                 Use this when the user asks about weather conditions,
                 temperature, or forecast for a specific location.
-                
+
                 Args:
                     location: City name or "City, Country" format
-                    
+
                 Returns:
                     Current weather information
                 """
@@ -1881,7 +1881,7 @@ class WeatherAPITool(ToolBuilder):
                     "apikey": settings.api_key,
                     "units": settings.units,
                 }
-                
+
                 for attempt in range(settings.max_retries):
                     try:
                         response = await http_client.get(
@@ -1891,19 +1891,19 @@ class WeatherAPITool(ToolBuilder):
                         )
                         response.raise_for_status()
                         data = response.json()
-                        
+
                         return (
                             f"Weather in {location}:\n"
                             f"Temperature: {data['temp']}°{settings.units.upper()}\n"
                             f"Conditions: {data['conditions']}\n"
                             f"Humidity: {data['humidity']}%"
                         )
-                    
+
                     except httpx.HTTPError as e:
                         if attempt == settings.max_retries - 1:
                             return f"Weather API error: {str(e)}"
                         continue
-        
+
         return get_weather
 ```
 
@@ -1915,8 +1915,8 @@ Wire tools through the container alongside agents:
 # containers.py
 from dependency_injector import containers, providers
 
-from tools.viz_search.tool import VizSearchTool
-from tools.viz_search.config import get_viz_search_tool_settings
+from tools.rules_search.tool import RulesSearchTool
+from tools.rules_search.config import get_rules_search_tool_settings
 from tools.weather_api.tool import WeatherAPITool
 from tools.weather_api.config import get_weather_api_tool_settings
 
@@ -1924,46 +1924,46 @@ from tools.weather_api.config import get_weather_api_tool_settings
 class ToolsContainer(containers.DeclarativeContainer):
     """
     Container for tool dependencies.
-    
+
     Tools are built through ToolBuilder pattern with their own
     settings and external dependencies.
     """
-    
+
     # External dependencies (Singletons - shared resources)
     vector_store = providers.Singleton(
         create_vector_store,
         embedding_model="text-embedding-3-small",
     )
-    
+
     http_client = providers.Singleton(
         httpx.AsyncClient,
         timeout=30.0,
-        headers={"User-Agent": "ActBI/1.0"},
+        headers={"User-Agent": "AcmeInc/1.0"},
     )
-    
+
     # Tool settings (Singletons - loaded once)
-    viz_search_settings = providers.Singleton(get_viz_search_tool_settings)
+    rules_search_settings = providers.Singleton(get_rules_search_tool_settings)
     weather_api_settings = providers.Singleton(get_weather_api_tool_settings)
-    
+
     # Tool builders (Factories - new instance per request if needed)
-    viz_search_tool_builder = providers.Factory(
-        VizSearchTool,
-        settings=viz_search_settings,
+    rules_search_tool_builder = providers.Factory(
+        RulesSearchTool,
+        settings=rules_search_settings,
         vector_store=vector_store,
     )
-    
+
     weather_api_tool_builder = providers.Factory(
         WeatherAPITool,
         settings=weather_api_settings,
         http_client=http_client,
     )
-    
+
     # Built tools (Singletons - tools are stateless, can be reused)
-    viz_search_tool = providers.Singleton(
+    rules_search_tool = providers.Singleton(
         lambda builder: builder.compile(),
-        builder=viz_search_tool_builder,
+        builder=rules_search_tool_builder,
     )
-    
+
     weather_api_tool = providers.Singleton(
         lambda builder: builder.compile(),
         builder=weather_api_tool_builder,
@@ -1974,24 +1974,24 @@ class AgentsContainer(containers.DeclarativeContainer):
     """
     Container for agents that use tools.
     """
-    
+
     # Import tools container
     tools = providers.Container(ToolsContainer)
-    
+
     # Agent settings
-    viz_designer_settings = providers.Singleton(get_viz_designer_settings)
-    
+    acme_agent_settings = providers.Singleton(get_acme_agent_settings)
+
     # Create tool lists for agents
-    viz_designer_tools = providers.List(
-        tools.viz_search_tool,
+    acme_agent_tools = providers.List(
+        tools.rules_search_tool,
         # other tools...
     )
-    
+
     # Agent with tools
-    viz_designer = providers.Factory(
-        VisualizationDesigner,
-        settings=viz_designer_settings,
-        tools=viz_designer_tools,  # Inject list of built tools
+    acme_agent = providers.Factory(
+        AcmeAgent,
+        settings=acme_agent_settings,
+        tools=acme_agent_tools,  # Inject list of built tools
     )
 ```
 
@@ -2000,32 +2000,32 @@ class AgentsContainer(containers.DeclarativeContainer):
 For simpler cases, agents can create tools using builders:
 
 ```python
-# agents/viz_designer/agent.py
-from tools.viz_search.tool import VizSearchTool
+# agents/acme_agent/agent.py
+from tools.rules_search.tool import RulesSearchTool
 
 
-class VisualizationDesigner(AgentBuilder):
+class AcmeAgent(AgentBuilder):
     """
     Designer that creates its own tools from builders.
     """
-    
+
     def __init__(
         self,
-        settings: VisualizationDesignerSettings,
-        viz_search_tool_builder: VizSearchTool,  # Inject builder
+        settings: AcmeAgentSettings,
+        rules_search_tool_builder: RulesSearchTool,  # Inject builder
     ):
         self.settings = settings
-        self.viz_search_tool_builder = viz_search_tool_builder
+        self.rules_search_tool_builder = rules_search_tool_builder
         self._graph = None
-    
+
     def _build(self) -> CompiledStateGraph:
         """Build graph and create tools"""
         # Compile the tool (cached after first call)
-        viz_search_tool = self.viz_search_tool_builder.compile()
-        
+        rules_search_tool = self.rules_search_tool_builder.compile()
+
         # Use in agent
-        tools = [viz_search_tool]
-        
+        tools = [rules_search_tool]
+
         # Create graph with tools...
         # ...
 
@@ -2033,11 +2033,11 @@ class VisualizationDesigner(AgentBuilder):
 # Container
 class AgentsContainer(containers.DeclarativeContainer):
     tools = providers.Container(ToolsContainer)
-    
-    viz_designer = providers.Factory(
-        VisualizationDesigner,
-        settings=viz_designer_settings,
-        viz_search_tool_builder=tools.viz_search_tool_builder,  # Inject builder
+
+    acme_agent = providers.Factory(
+        AcmeAgent,
+        settings=acme_agent_settings,
+        rules_search_tool_builder=tools.rules_search_tool_builder,  # Inject builder
     )
 ```
 
@@ -2046,27 +2046,27 @@ class AgentsContainer(containers.DeclarativeContainer):
 Test tools with mocked dependencies:
 
 ```python
-# tests/test_tools/test_viz_search.py
+# tests/test_tools/test_rules_search.py
 import pytest
 from unittest.mock import Mock
 
-from tools.viz_search.tool import VizSearchTool
-from tools.viz_search.config import VizSearchToolSettings
+from tools.rules_search.tool import RulesSearchTool
+from tools.rules_search.config import RulesSearchToolSettings
 
 
-class TestVizSearchTool:
+class TestRulesSearchTool:
     """Test suite for viz search tool"""
-    
+
     @pytest.fixture
     def test_settings(self):
         """Provide test settings"""
-        return VizSearchToolSettings(
+        return RulesSearchToolSettings(
             collection_name="test_collection",
             top_k=3,
             score_threshold=0.5,
             debug=True,
         )
-    
+
     @pytest.fixture
     def mock_vector_store(self):
         """Provide mock vector store"""
@@ -2076,50 +2076,50 @@ class TestVizSearchTool:
             (Mock(page_content="Rule 2", metadata={"source": "guide.md"}), 0.8),
         ]
         return mock
-    
+
     @pytest.fixture
     def tool_builder(self, test_settings, mock_vector_store):
         """Provide tool builder with mocked dependencies"""
-        return VizSearchTool(
+        return RulesSearchTool(
             settings=test_settings,
             vector_store=mock_vector_store,
         )
-    
+
     def test_tool_initialization(self, tool_builder, test_settings):
         """Test tool initializes with settings"""
         assert tool_builder.settings == test_settings
         assert tool_builder.vector_store is not None
-    
+
     def test_compile_returns_tool(self, tool_builder):
         """Test compile() returns a BaseTool"""
         tool = tool_builder.compile()
         assert tool is not None
         assert hasattr(tool, 'invoke')
-        assert tool.name == "search_viz_design_rules"
-    
+        assert tool.name == "search_design_rules"
+
     def test_compile_caches_result(self, tool_builder):
         """Test compile() caches the result"""
         tool1 = tool_builder.compile()
         tool2 = tool_builder.compile()
         assert tool1 is tool2
-    
+
     def test_reset_clears_cache(self, tool_builder):
         """Test reset() clears the cached compilation"""
         tool1 = tool_builder.compile()
         tool_builder.reset()
         tool2 = tool_builder.compile()
         assert tool1 is not tool2
-    
+
     def test_tool_invocation(self, tool_builder, mock_vector_store):
         """Test tool can be invoked"""
         tool = tool_builder.compile()
-        
+
         result = tool.invoke({"query": "bar chart guidelines"})
-        
+
         assert "Rule 1" in result
         assert "Rule 2" in result
         mock_vector_store.similarity_search_with_score.assert_called_once()
-    
+
     def test_tool_score_filtering(self, tool_builder, mock_vector_store):
         """Test tool filters by score threshold"""
         # Return one result below threshold
@@ -2127,10 +2127,10 @@ class TestVizSearchTool:
             (Mock(page_content="High score", metadata={}), 0.8),
             (Mock(page_content="Low score", metadata={}), 0.3),
         ]
-        
+
         tool = tool_builder.compile()
         result = tool.invoke({"query": "test"})
-        
+
         assert "High score" in result
         assert "Low score" not in result
 ```
@@ -2144,25 +2144,25 @@ Additional tool settings examples:
 class WeatherAPIToolSettings(BaseSettings):
     """
     Configuration for weather API tool.
-    
+
     Example .env:
         TOOL_WEATHER_API_BASE_URL=https://api.weather.com/v1
         TOOL_WEATHER_API_KEY=your-api-key
         TOOL_WEATHER_API_UNITS=metric
     """
-    
+
     model_config = SettingsConfigDict(
         env_prefix="TOOL_WEATHER_API_",
         env_file=".env",
         case_sensitive=False,
     )
-    
+
     api_base_url: str
     api_key: str
     units: str = "metric"  # or "imperial"
     timeout: float = 10.0
     max_retries: int = 3
-    
+
     tool_name: str = "get_weather"
     tool_description: str = "Get current weather for a location"
 
@@ -2171,24 +2171,24 @@ class WeatherAPIToolSettings(BaseSettings):
 class DatabaseQueryToolSettings(BaseSettings):
     """
     Configuration for database query tool.
-    
+
     Example .env:
         TOOL_DATABASE_QUERY_MAX_ROWS=1000
         TOOL_DATABASE_QUERY_TIMEOUT=30.0
         TOOL_DATABASE_QUERY_ALLOWED_TABLES=users,products,orders
     """
-    
+
     model_config = SettingsConfigDict(
         env_prefix="TOOL_DATABASE_QUERY_",
         env_file=".env",
         case_sensitive=False,
     )
-    
+
     max_rows: int = Field(default=1000, ge=1, le=10000)
     timeout: float = 30.0
     allowed_tables: list[str] = Field(default_factory=list)
     read_only: bool = True
-    
+
     tool_name: str = "query_database"
 ```
 
@@ -2199,10 +2199,10 @@ tools/
 ├── __init__.py
 ├── base.py                      # ToolBuilder protocol
 │
-├── viz_search/                  # Vector search tool
-│   ├── __init__.py             # Exports VizSearchTool
-│   ├── tool.py                 # VizSearchTool builder
-│   └── config.py               # VizSearchToolSettings
+├── rules_search/                  # Vector search tool
+│   ├── __init__.py             # Exports RulesSearchTool
+│   ├── tool.py                 # RulesSearchTool builder
+│   └── config.py               # RulesSearchToolSettings
 │
 ├── weather_api/                 # API-based tool
 │   ├── __init__.py
@@ -2232,7 +2232,7 @@ tools/
 
 ### 12. Configuration Management (Legacy Pattern)
 
-*Note: The composite settings pattern above is recommended for complex agents. This section shows the simpler pattern for shared configuration across multiple agents.*
+_Note: The composite settings pattern above is recommended for complex agents. This section shows the simpler pattern for shared configuration across multiple agents._
 
 Structured configuration with Pydantic Settings:
 
@@ -2245,37 +2245,37 @@ from functools import lru_cache
 class AgentSettings(BaseSettings):
     """
     Shared agent configuration from AGENT_* environment variables.
-    
+
     Use this pattern when multiple agents share the same configuration.
     For agent-specific config, use the composite pattern instead.
     """
-    
+
     # Model configuration
     main_model: str = "gpt-4-turbo-preview"
     fast_model: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
-    
+
     # API keys
     openai_api_key: str
     anthropic_api_key: str = ""
-    
+
     # Agent behavior
     temperature: float = 0.0
     max_iterations: int = 10
     max_refinement_iterations: int = 3
-    
+
     # Performance
     request_timeout: float = 30.0
     max_retries: int = 3
-    
+
     # Logging
     verbose: bool = False
     log_level: str = "INFO"
-    
+
     # Memory
     enable_checkpointing: bool = False
     checkpoint_dir: str = "./checkpoints"
-    
+
     class Config:
         env_prefix = "AGENT_"
         env_file = ".env"
@@ -2286,7 +2286,7 @@ class AgentSettings(BaseSettings):
 def get_agent_settings() -> AgentSettings:
     """
     Get cached agent settings.
-    
+
     Called once per process, ensures single source of truth.
     """
     return AgentSettings()
@@ -2305,36 +2305,36 @@ from langchain_core.messages import BaseMessage
 class StreamingAgent(AgentBuilder):
     """
     Agent with streaming support for real-time responses.
-    
+
     Useful for:
     - Long-running agent tasks
     - Progressive UI updates
     - Real-time user feedback
     """
-    
+
     def build_streaming(self) -> Runnable:
         """
         Build agent with streaming enabled.
-        
+
         Returns:
             Runnable: Agent that supports .astream()
         """
         # Compile agent with streaming config
         agent = self.compile()
         return agent.with_config({"recursion_limit": 100})
-    
+
     async def stream_response(
         self,
-        state: VisualizationState
+        state: InteractionState
     ) -> AsyncIterator[dict]:
         """
         Stream agent responses as they're generated.
-        
+
         Yields:
             dict: Incremental state updates
         """
         agent = self.build_streaming()
-        
+
         async for chunk in agent.astream(state):
             # Yield each intermediate state
             yield {
@@ -2351,15 +2351,15 @@ async def stream_visualization(
     request: VisualizationRequest,
     agent: StreamingAgent = Depends(Provide[AgentsContainer.streaming_agent]),
 ):
-    """Stream visualization creation progress"""
-    
+    """Stream interaction creation progress"""
+
     from fastapi.responses import StreamingResponse
     import json
-    
+
     async def generate():
         async for chunk in agent.stream_response(request.to_state()):
             yield f"data: {json.dumps(chunk)}\n\n"
-    
+
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
@@ -2380,30 +2380,30 @@ from langchain_core.runnables import RunnableSequence
 class AgentPipeline(AgentBuilder):
     """
     Sequential pipeline of multiple agents.
-    
+
     Each agent processes the output of the previous one.
     """
-    
+
     def __init__(self, agents: List[AgentBuilder]):
         """
         Initialize pipeline with ordered agents.
-        
+
         Args:
             agents: List of agent builders to chain
         """
         self.agents = agents
         self._pipeline: Optional[Runnable] = None
-    
+
     def _build(self) -> CompiledStateGraph:
         """Build sequential pipeline of agents.
-        
+
         Note: For simple sequential composition, ``RunnableSequence``
         works. For complex multi-stage pipelines, prefer the
         "invoke from a node" pattern (see Section 4).
         """
         # Compile all sub-agents
         runnables = [agent.compile() for agent in self.agents]
-        
+
         # Compose into sequence
         return RunnableSequence(*runnables)
 
@@ -2414,9 +2414,9 @@ class AgentsContainer(containers.DeclarativeContainer):
     selector = providers.Factory(ChartSelectionAgent, ...)
     validator = providers.Factory(ChartValidator, ...)
     formatter = providers.Factory(ChartFormatter, ...)
-    
+
     # Pipeline combining them
-    viz_pipeline = providers.Factory(
+    agent_pipeline = providers.Factory(
         AgentPipeline,
         agents=providers.List(
             selector,
@@ -2439,17 +2439,17 @@ from langgraph.store.postgres import PostgresStore
 class MemoryAgent(AgentBuilder):
     """
     Agent with persistent memory across sessions.
-    
+
     Uses LangGraph's checkpointing and store for:
     - Conversation history
     - User preferences
     - Previous decisions
-    
+
     Note: Checkpointer and store are injected as dependencies
     and their lifecycle is managed externally (typically at
     the application level).
     """
-    
+
     def __init__(
         self,
         llm: ChatOpenAI,
@@ -2459,7 +2459,7 @@ class MemoryAgent(AgentBuilder):
     ):
         """
         Initialize agent with memory dependencies.
-        
+
         Args:
             llm: Language model for reasoning
             tools: Agent tools
@@ -2470,13 +2470,13 @@ class MemoryAgent(AgentBuilder):
         self.tools = tools
         self.checkpointer = checkpointer
         self.store = store
-    
+
     def _build(self) -> CompiledStateGraph:
         """Build agent with memory"""
         # Create graph
-        workflow = StateGraph(VisualizationState)
+        workflow = StateGraph(InteractionState)
         # ... add nodes and edges ...
-        
+
         # Compile with memory
         return workflow.compile(
             checkpointer=self.checkpointer,
@@ -2497,13 +2497,13 @@ from langchain_core.tools import BaseTool
 class DynamicToolAgent(AgentBuilder):
     """
     Agent with dynamic tool loading based on context.
-    
+
     Tools are loaded based on:
     - User permissions
     - Data availability
     - Task requirements
     """
-    
+
     def __init__(
         self,
         llm: ChatOpenAI,
@@ -2513,41 +2513,41 @@ class DynamicToolAgent(AgentBuilder):
         self.llm = llm
         self.tool_registry = tool_registry
         self.default_tools = default_tools
-    
+
     def get_tools_for_context(self, context: dict) -> List[BaseTool]:
         """
         Load appropriate tools based on context.
-        
+
         Args:
             context: User context, permissions, data sources
-            
+
         Returns:
             List of tools available for this context
         """
         available_tools = []
-        
+
         # Always add default tools
         for tool_name in self.default_tools:
             if tool_name in self.tool_registry:
                 tool = self.tool_registry[tool_name]()
                 available_tools.append(tool)
-        
+
         # Add contextual tools
         if context.get("has_database_access"):
             db_tool = self.tool_registry["query_database"]()
             available_tools.append(db_tool)
-        
+
         if context.get("has_api_access"):
             api_tool = self.tool_registry["call_api"]()
             available_tools.append(api_tool)
-        
+
         return available_tools
-    
+
     def _build(self, context: dict = None) -> CompiledStateGraph:
         """Build agent with context-appropriate tools"""
         context = context or {}
         tools = self.get_tools_for_context(context)
-        
+
         return create_agent(
             model=self.llm,
             tools=tools,
@@ -2561,7 +2561,7 @@ class DynamicToolAgent(AgentBuilder):
 
 ```python
 # Good — consumers call compile()
-designer = VisualizationDesigner(settings=settings)
+designer = AcmeAgent(settings=settings)
 graph = designer.compile()      # cached, full Runnable API
 result = await graph.ainvoke(input, context=ctx)
 
@@ -2573,23 +2573,23 @@ graph = designer._build()       # DON'T DO THIS
 
 ```python
 # Good - Factory for per-request agents
-viz_designer = providers.Factory(VisualizationDesigner, ...)
+acme_agent = providers.Factory(AcmeAgent, ...)
 
 # Bad - Singleton for stateful agent (state leaks between requests)
-viz_designer = providers.Singleton(VisualizationDesigner, ...)
+acme_agent = providers.Singleton(AcmeAgent, ...)
 ```
 
 ### 3. Use Composite Settings for Complex Agents
 
 ```python
 # Good - single settings object encapsulates all config
-class VisualizationDesigner(AgentBuilder):
-    def __init__(self, settings: VisualizationDesignerSettings):
+class AcmeAgent(AgentBuilder):
+    def __init__(self, settings: AcmeAgentSettings):
         super().__init__()
         self.settings = settings
 
 # Bad - too many parameters, hard to maintain
-class VisualizationDesigner(AgentBuilder):
+class AcmeAgent(AgentBuilder):
     def __init__(
         self,
         model: str,
@@ -2680,8 +2680,8 @@ class VizSelectionState(TypedDict):
 ### 8. Document Agent Capabilities
 
 ```python
-class VisualizationDesigner(AgentBuilder):
-    """2-stage visualization pipeline: Selection -> Refinement.
+class AcmeAgent(AgentBuilder):
+    """2-stage interaction pipeline: Selection -> Refinement.
 
     Uses the LangGraph "invoke from a node" subgraph pattern so each
     sub-agent operates on its own focused state while the parent graph
@@ -2699,8 +2699,8 @@ class VisualizationDesigner(AgentBuilder):
     - Does not persist results (upstream API layer responsibility)
 
     Dependencies:
-    - VisualizationDesignerSettings (composite config)
-    - XLakeClient (optional, for viz design rules search)
+    - AcmeAgentSettings (composite config)
+    - AcmeStoreClient (optional, for viz design rules search)
     """
 ```
 
@@ -2716,13 +2716,13 @@ def test_subclass_cannot_override_compile():
 
 # Unit test — test compile returns graph
 def test_compile_returns_graph():
-    designer = VisualizationDesigner(settings=test_settings)
+    designer = AcmeAgent(settings=test_settings)
     graph = designer.compile()
     assert isinstance(graph, CompiledStateGraph)
 
 # Integration test — test node transforms
 def test_selection_to_refinement():
-    designer = VisualizationDesigner(settings=test_settings)
+    designer = AcmeAgent(settings=test_settings)
     result = designer._selection_to_refinement(mock_state)
     assert "messages" in result
 
@@ -2744,10 +2744,10 @@ project/
 │   │   └── utils.py                # create_agent_context() and other utilities
 │   ├── models.py                   # AgentContext dataclass
 │   │
-│   ├── viz_designer/               # Complex agent with composite config
-│   │   ├── __init__.py             # Exports VisualizationDesigner
-│   │   ├── agent.py                # VisualizationDesigner (_build)
-│   │   ├── config.py               # VisualizationDesignerSettings
+│   ├── acme_agent/               # Complex agent with composite config
+│   │   ├── __init__.py             # Exports AcmeAgent
+│   │   ├── agent.py                # AcmeAgent (_build)
+│   │   ├── config.py               # AcmeAgentSettings
 │   │   ├── schemas.py              # Input/Output/GraphState + sub-agent states
 │   │   ├── prompts.py              # Prompt templates
 │   │   └── README.md               # Agent documentation
@@ -2758,9 +2758,9 @@ project/
 │   │   ├── config.py               # ChartSelectorSettings
 │   │   └── schemas.py              # State definition
 │   │
-│   ├── viz_coordinator/            # Multi-agent coordinator
+│   ├── agent_coordinator/            # Multi-agent coordinator
 │   │   ├── __init__.py
-│   │   ├── agent.py                # VizCoordinator builder
+│   │   ├── agent.py                # AgentCoordinator builder
 │   │   ├── config.py               # CoordinatorSettings
 │   │   └── state.py
 │   │
@@ -2777,7 +2777,7 @@ project/
 ├── api/
 │   ├── __init__.py
 │   └── routes/
-│       ├── visualizations.py       # Visualization endpoints
+│       ├── visualizations.py       # Interaction endpoints
 │       └── charts.py               # Chart endpoints
 │
 ├── tools/
@@ -2791,13 +2791,13 @@ project/
 │   ├── conftest.py                 # Test fixtures
 │   ├── containers.py               # Test containers
 │   ├── test_tools/
-│   │   ├── test_viz_search/
+│   │   ├── test_rules_search/
 │   │   │   ├── test_tool.py        # Tool tests
 │   │   │   └── test_config.py      # Config tests
 │   │   ├── test_weather_api.py
 │   │   └── test_database_query.py
 │   ├── test_agents/
-│   │   ├── test_viz_designer/
+│   │   ├── test_acme_agent/
 │   │   │   ├── test_agent.py       # Agent tests
 │   │   │   ├── test_config.py      # Config tests
 │   │   │   └── test_nodes.py       # Node tests
@@ -2846,10 +2846,10 @@ This architecture provides:
 - Agents and tools are stateless — dependencies managed externally
 - Test at unit, integration, and E2E levels
 
-**Reference implementation:** See `agents/src/agents/viz_designer/agent.py` for a complete example of all patterns above.
+**Reference implementation:** See `agents/src/agents/acme_agent/agent.py` for a complete example of all patterns above.
 
 ---
 
 **Version**: 1.3  
 **Last Updated**: 2026-02-12  
-**Author**: ActBI Engineering Team
+**Author**: Acme Inc. Engineering Team

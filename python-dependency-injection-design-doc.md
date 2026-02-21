@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the dependency injection (DI) architecture for the ActBI platform. We use `dependency-injector` with Pydantic Settings to provide centralized configuration management, explicit dependency graphs, and flexible component wiring across our FastAPI backend, LangChain agents, and XLake clients.
+This document describes the dependency injection (DI) architecture for the Acme Inc. platform. We use `dependency-injector` with Pydantic Settings to provide centralized configuration management, explicit dependency graphs, and flexible component wiring across our FastAPI backend, LangChain agents, and AcmeStore clients.
 
 ## Core Principles
 
@@ -11,26 +11,26 @@ This document describes the dependency injection (DI) architecture for the ActBI
 Each package owns its configuration through Pydantic Settings classes with environment variable prefixes:
 
 ```python
-# xlake/config.py
+# acmestore/config.py
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
-class XLakeSettings(BaseSettings):
-    """XLake configuration from XLAKE_* environment variables"""
+class AcmeStoreSettings(BaseSettings):
+    """AcmeStore configuration from ACMESTORE_* environment variables"""
     base_url: str
     api_key: str
     timeout: float = 30.0
     max_retries: int = 3
     
     class Config:
-        env_prefix = "XLAKE_"
+        env_prefix = "ACMESTORE_"
         env_file = ".env"
         case_sensitive = False
 
 @lru_cache
-def get_xlake_settings() -> XLakeSettings:
+def get_acmestore_settings() -> AcmeStoreSettings:
     """Cached settings instance - called once per process"""
-    return XLakeSettings()
+    return AcmeStoreSettings()
 ```
 
 **Benefits:**
@@ -44,11 +44,11 @@ def get_xlake_settings() -> XLakeSettings:
 All dependencies are passed explicitly through `__init__()` methods - no global state:
 
 ```python
-# xlake/client.py
+# acmestore/client.py
 import httpx
 
-class XLakeClient:
-    """XLake API client with explicit dependencies"""
+class AcmeStoreClient:
+    """AcmeStore API client with explicit dependencies"""
     
     def __init__(
         self,
@@ -98,17 +98,17 @@ The DI container uses two provider types:
 # containers.py
 class ApplicationContainer(containers.DeclarativeContainer):
     # Singleton - reuse expensive HTTP client
-    xlake_client = providers.Singleton(
-        XLakeClient,
-        base_url=xlake_settings.provided.base_url,
-        api_key=xlake_settings.provided.api_key,
+    acmestore_client = providers.Singleton(
+        AcmeStoreClient,
+        base_url=acmestore_settings.provided.base_url,
+        api_key=acmestore_settings.provided.api_key,
     )
     
     # Factory - new agent per request
     chart_selection_agent = providers.Factory(
         ChartSelectionAgent,
         llm=llm,
-        xlake_client=xlake_client,  # Injects the singleton
+        acmestore_client=acmestore_client,  # Injects the singleton
     )
 ```
 
@@ -156,26 +156,26 @@ User Request → FastAPI Route
                     ↓
          Container looks up visualization_service
                     ↓
-    Needs: chart_selection_agent + xlake_client
+    Needs: chart_selection_agent + acmestore_client
                     ↓
     ┌─────────────┴─────────────┐
     ↓                           ↓
-Create Agent                Get XLake Client (Singleton)
-Needs: llm + xlake_client       ↓
-    ↓                       Get xlake_settings
+Create Agent                Get AcmeStore Client (Singleton)
+Needs: llm + acmestore_client       ↓
+    ↓                       Get acmestore_settings
 Create LLM (Singleton)          ↓
-    ↓                       Create XLakeClient(...)
+    ↓                       Create AcmeStoreClient(...)
 Get agent_settings              ↓
     ↓                       Return instance
 Create ChatOpenAI(...)
     ↓
-Get xlake_client (reuse singleton)
+Get acmestore_client (reuse singleton)
     ↓
 Create ChartSelectionAgent(...)
     ↓
     └─────────────┬─────────────┘
                   ↓
-    Create VisualizationService(...)
+    Create InteractionService(...)
                   ↓
     Return to route handler
 ```
@@ -189,7 +189,7 @@ Create ChartSelectionAgent(...)
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate
-from xlake.client import XLakeClient
+from acmestore.client import AcmeStoreClient
 from typing import List
 
 class ChartSelectionAgent:
@@ -198,7 +198,7 @@ class ChartSelectionAgent:
     def __init__(
         self,
         llm: ChatOpenAI,
-        xlake_client: XLakeClient,
+        acmestore_client: AcmeStoreClient,
         tools: List = None,
     ):
         """
@@ -206,16 +206,16 @@ class ChartSelectionAgent:
         
         Args:
             llm: LangChain LLM instance for reasoning
-            xlake_client: XLake client for chart operations
+            acmestore_client: AcmeStore client for chart operations
             tools: List of LangChain tools for the agent
         """
         self.llm = llm
-        self.xlake_client = xlake_client
+        self.acmestore_client = acmestore_client
         self.tools = tools or []
         
         # Create prompt template
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a data visualization expert..."),
+            ("system", "You are a data interaction expert..."),
             ("human", "{input}"),
             ("placeholder", "{agent_scratchpad}"),
         ])
@@ -255,25 +255,25 @@ class ChartSelectionAgent:
 ```python
 # services/visualization_service.py
 from agents.chart_selection_agent import ChartSelectionAgent
-from xlake.client import XLakeClient
+from acmestore.client import AcmeStoreClient
 
-class VisualizationService:
-    """High-level service for visualization creation"""
+class InteractionService:
+    """High-level service for interaction creation"""
     
     def __init__(
         self,
         agent: ChartSelectionAgent,
-        xlake_client: XLakeClient,
+        acmestore_client: AcmeStoreClient,
     ):
         """
         Initialize service with dependencies.
         
         Args:
             agent: Agent for chart selection logic
-            xlake_client: Client for XLake operations
+            acmestore_client: Client for AcmeStore operations
         """
         self.agent = agent
-        self.xlake_client = xlake_client
+        self.acmestore_client = acmestore_client
     
     async def create_visualization(
         self,
@@ -281,7 +281,7 @@ class VisualizationService:
         data_schema: dict,
     ) -> dict:
         """
-        Create complete visualization from user query.
+        Create complete interaction from user query.
         
         Args:
             query: Natural language description
@@ -297,7 +297,7 @@ class VisualizationService:
         )
         
         # Use injected client to save
-        saved_chart = await self.xlake_client.create_chart(chart_config)
+        saved_chart = await self.acmestore_client.create_chart(chart_config)
         
         return saved_chart
 ```
@@ -307,11 +307,11 @@ class VisualizationService:
 ```python
 # containers.py
 from dependency_injector import containers, providers
-from xlake.config import get_xlake_settings
-from xlake.client import XLakeClient
+from acmestore.config import get_acmestore_settings
+from acmestore.client import AcmeStoreClient
 from agents.config import get_agent_settings
 from agents.chart_selection_agent import ChartSelectionAgent
-from services.visualization_service import VisualizationService
+from services.visualization_service import InteractionService
 from langchain_openai import ChatOpenAI
 
 class ApplicationContainer(containers.DeclarativeContainer):
@@ -323,17 +323,17 @@ class ApplicationContainer(containers.DeclarativeContainer):
     """
     
     # ==================== Settings ====================
-    xlake_settings = providers.Singleton(get_xlake_settings)
+    acmestore_settings = providers.Singleton(get_acmestore_settings)
     agent_settings = providers.Singleton(get_agent_settings)
     
     # ==================== Infrastructure ====================
     
-    # XLake Client (Singleton - reuse HTTP connection)
-    xlake_client = providers.Singleton(
-        XLakeClient,
-        base_url=xlake_settings.provided.base_url,
-        api_key=xlake_settings.provided.api_key,
-        timeout=xlake_settings.provided.timeout,
+    # AcmeStore Client (Singleton - reuse HTTP connection)
+    acmestore_client = providers.Singleton(
+        AcmeStoreClient,
+        base_url=acmestore_settings.provided.base_url,
+        api_key=acmestore_settings.provided.api_key,
+        timeout=acmestore_settings.provided.timeout,
     )
     
     # ==================== LLM & Tools ====================
@@ -355,7 +355,7 @@ class ApplicationContainer(containers.DeclarativeContainer):
     chart_selection_agent = providers.Factory(
         ChartSelectionAgent,
         llm=llm,  # Injects singleton LLM
-        xlake_client=xlake_client,  # Injects singleton client
+        acmestore_client=acmestore_client,  # Injects singleton client
         tools=tools,
     )
     
@@ -363,9 +363,9 @@ class ApplicationContainer(containers.DeclarativeContainer):
     
     # Visualization Service (Factory - new per request)
     visualization_service = providers.Factory(
-        VisualizationService,
+        InteractionService,
         agent=chart_selection_agent,  # Creates new agent
-        xlake_client=xlake_client,  # Injects singleton client
+        acmestore_client=acmestore_client,  # Injects singleton client
     )
     
     # ==================== Wiring ====================
@@ -385,8 +385,8 @@ class ApplicationContainer(containers.DeclarativeContainer):
 from fastapi import APIRouter, Depends
 from dependency_injector.wiring import inject, Provide
 from containers import ApplicationContainer
-from services.visualization_service import VisualizationService
-from xlake.client import XLakeClient
+from services.visualization_service import InteractionService
+from acmestore.client import AcmeStoreClient
 
 router = APIRouter()
 
@@ -395,15 +395,15 @@ router = APIRouter()
 async def select_chart(
     query: str,
     data_schema: dict,
-    visualization_service: VisualizationService = Depends(
+    visualization_service: InteractionService = Depends(
         Provide[ApplicationContainer.visualization_service]
     ),
 ):
     """
-    Select and create chart visualization.
+    Select and create chart interaction.
     
     The visualization_service is automatically injected by the DI container.
-    It comes with all its dependencies (agent, XLake client, LLM, etc.) 
+    It comes with all its dependencies (agent, AcmeStore client, LLM, etc.) 
     already wired together.
     """
     result = await visualization_service.create_visualization(
@@ -417,17 +417,17 @@ async def select_chart(
 @inject
 async def get_chart(
     chart_id: str,
-    xlake_client: XLakeClient = Depends(
-        Provide[ApplicationContainer.xlake_client]
+    acmestore_client: AcmeStoreClient = Depends(
+        Provide[ApplicationContainer.acmestore_client]
     ),
 ):
     """
     Get chart by ID.
     
-    Only needs XLake client, not the full service stack.
+    Only needs AcmeStore client, not the full service stack.
     Container provides just what we need.
     """
-    chart = await xlake_client.get_chart(chart_id)
+    chart = await acmestore_client.get_chart(chart_id)
     return chart
 ```
 
@@ -451,13 +451,13 @@ async def lifespan(app: FastAPI):
     container = app.container
     
     # Initialize async resources
-    xlake_client = container.xlake_client()
-    await xlake_client.initialize()
+    acmestore_client = container.acmestore_client()
+    await acmestore_client.initialize()
     
     yield
     
     # Shutdown
-    await xlake_client.close()
+    await acmestore_client.close()
 
 def create_app() -> FastAPI:
     """
@@ -466,7 +466,7 @@ def create_app() -> FastAPI:
     Creates FastAPI app with dependency injection container.
     """
     app = FastAPI(
-        title="ActBI API",
+        title="Acme Inc. API",
         lifespan=lifespan,
     )
     
@@ -493,7 +493,7 @@ app = create_app()
 from dependency_injector import containers, providers
 from containers import ApplicationContainer
 from unittest.mock import Mock
-from xlake.client import XLakeClient
+from acmestore.client import AcmeStoreClient
 from langchain_openai import ChatOpenAI
 
 class TestContainer(ApplicationContainer):
@@ -504,10 +504,10 @@ class TestContainer(ApplicationContainer):
     services with mocks for isolated testing.
     """
     
-    # Override XLake client with mock
-    xlake_client = providers.Singleton(
+    # Override AcmeStore client with mock
+    acmestore_client = providers.Singleton(
         Mock,
-        spec=XLakeClient,
+        spec=AcmeStoreClient,
     )
     
     # Use cheaper/faster LLM for tests
@@ -539,9 +539,9 @@ def container():
     container.unwire()
 
 @pytest.fixture
-def xlake_client(container):
-    """Get mocked XLake client from container"""
-    return container.xlake_client()
+def acmestore_client(container):
+    """Get mocked AcmeStore client from container"""
+    return container.acmestore_client()
 
 @pytest.fixture
 def chart_selection_agent(container):
@@ -564,7 +564,7 @@ def test_chart_selection(chart_selection_agent):
     """
     Test chart selection with injected agent.
     
-    Agent has mocked XLake client and real (test) LLM from TestContainer.
+    Agent has mocked AcmeStore client and real (test) LLM from TestContainer.
     """
     result = chart_selection_agent.select_chart(
         query="Show sales by region",
@@ -580,16 +580,16 @@ def test_chart_selection_custom_mock(container, mocker):
     Test with custom mock overriding container dependency.
     """
     # Create custom mock
-    mock_xlake = mocker.Mock()
-    mock_xlake.create_chart.return_value = {"id": "123", "type": "bar"}
+    mock_acmestore = mocker.Mock()
+    mock_acmestore.create_chart.return_value = {"id": "123", "type": "bar"}
     
     # Override specific dependency for this test
-    with container.xlake_client.override(mock_xlake):
+    with container.acmestore_client.override(mock_acmestore):
         agent = container.chart_selection_agent()
         result = agent.select_chart("test query", {})
         
         # Verify mock was called
-        mock_xlake.create_chart.assert_called_once()
+        mock_acmestore.create_chart.assert_called_once()
 
 
 def test_visualization_service(visualization_service, mocker):
@@ -614,11 +614,11 @@ Use package prefixes to organize configuration:
 ```bash
 # .env
 
-# XLake Configuration
-XLAKE_BASE_URL=http://localhost:8001
-XLAKE_API_KEY=secret_key_123
-XLAKE_TIMEOUT=60.0
-XLAKE_MAX_RETRIES=5
+# AcmeStore Configuration
+ACMESTORE_BASE_URL=http://localhost:8001
+ACMESTORE_API_KEY=secret_key_123
+ACMESTORE_TIMEOUT=60.0
+ACMESTORE_MAX_RETRIES=5
 
 # Agent Configuration
 AGENT_LLM_MODEL=gpt-4
@@ -627,7 +627,7 @@ AGENT_OPENAI_API_KEY=sk-...
 AGENT_MAX_TOKENS=8000
 
 # Database Configuration
-DB_URL=postgresql://localhost:5432/actbi
+DB_URL=postgresql://localhost:5432/acme
 DB_POOL_SIZE=20
 DB_POOL_TIMEOUT=30
 
@@ -646,7 +646,7 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ...
 
 | Package | Settings Class | Env Prefix | Example Variables |
 |---------|---------------|------------|-------------------|
-| xlake | `XLakeSettings` | `XLAKE_` | `XLAKE_BASE_URL`, `XLAKE_API_KEY` |
+| acmestore | `AcmeStoreSettings` | `ACMESTORE_` | `ACMESTORE_BASE_URL`, `ACMESTORE_API_KEY` |
 | agents | `AgentSettings` | `AGENT_` | `AGENT_LLM_MODEL`, `AGENT_OPENAI_API_KEY` |
 | database | `DatabaseSettings` | `DB_` | `DB_URL`, `DB_POOL_SIZE` |
 | auth | `AuthSettings` | `AUTH_` | `AUTH_JWT_SECRET`, `AUTH_GOOGLE_CLIENT_ID` |
@@ -660,12 +660,12 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ...
 class ApplicationContainer(containers.DeclarativeContainer):
     """Full production container with all real services"""
     
-    xlake_settings = providers.Singleton(get_xlake_settings)
+    acmestore_settings = providers.Singleton(get_acmestore_settings)
     
-    xlake_client = providers.Singleton(
-        XLakeClient,
-        base_url=xlake_settings.provided.base_url,
-        api_key=xlake_settings.provided.api_key,
+    acmestore_client = providers.Singleton(
+        AcmeStoreClient,
+        base_url=acmestore_settings.provided.base_url,
+        api_key=acmestore_settings.provided.api_key,
     )
     
     # ... all production providers
@@ -678,7 +678,7 @@ class ApplicationContainer(containers.DeclarativeContainer):
 class TestContainer(ApplicationContainer):
     """Test container with mocked external dependencies"""
     
-    xlake_client = providers.Singleton(Mock, spec=XLakeClient)
+    acmestore_client = providers.Singleton(Mock, spec=AcmeStoreClient)
     llm = providers.Singleton(ChatOpenAI, model="gpt-3.5-turbo")
 ```
 
@@ -686,20 +686,20 @@ class TestContainer(ApplicationContainer):
 
 ```python
 # containers/minimal.py
-class MinimalXLakeContainer(containers.DeclarativeContainer):
-    """Minimal container for XLake operations only"""
+class MinimalAcmeStoreContainer(containers.DeclarativeContainer):
+    """Minimal container for AcmeStore operations only"""
     
-    xlake_settings = providers.Singleton(get_xlake_settings)
+    acmestore_settings = providers.Singleton(get_acmestore_settings)
     
-    xlake_client = providers.Singleton(
-        XLakeClient,
-        base_url=xlake_settings.provided.base_url,
-        api_key=xlake_settings.provided.api_key,
+    acmestore_client = providers.Singleton(
+        AcmeStoreClient,
+        base_url=acmestore_settings.provided.base_url,
+        api_key=acmestore_settings.provided.api_key,
     )
 
 # Usage in script
-container = MinimalXLakeContainer()
-client = container.xlake_client()
+container = MinimalAcmeStoreContainer()
+client = container.acmestore_client()
 result = client.get_chart("chart-123")
 ```
 
@@ -710,9 +710,9 @@ result = client.get_chart("chart-123")
 class DevelopmentContainer(ApplicationContainer):
     """Development with local overrides"""
     
-    # Override to use local XLake instance
-    xlake_client = providers.Singleton(
-        XLakeClient,
+    # Override to use local AcmeStore instance
+    acmestore_client = providers.Singleton(
+        AcmeStoreClient,
         base_url="http://localhost:8001",
         api_key="dev-key",
     )
@@ -727,7 +727,7 @@ class DevelopmentContainer(ApplicationContainer):
 ## File Organization
 
 ```
-actbi/
+acme/
 ├── .env                              # Environment variables
 │
 ├── containers.py                     # Main application container
@@ -737,10 +737,10 @@ actbi/
 │   ├── minimal.py                   # Minimal containers
 │   └── development.py               # Development overrides
 │
-├── xlake/
+├── acmestore/
 │   ├── __init__.py
-│   ├── config.py                    # XLakeSettings
-│   ├── client.py                    # XLakeClient
+│   ├── config.py                    # AcmeStoreSettings
+│   ├── client.py                    # AcmeStoreClient
 │   └── models.py
 │
 ├── agents/
@@ -785,13 +785,13 @@ actbi/
 def __init__(
     self,
     llm: ChatOpenAI,
-    xlake_client: XLakeClient,
+    acmestore_client: AcmeStoreClient,
     tools: List[Tool] = None,
 ):
     ...
 
 # Bad
-def __init__(self, llm, xlake_client, tools=None):
+def __init__(self, llm, acmestore_client, tools=None):
     ...
 ```
 
@@ -801,14 +801,14 @@ def __init__(self, llm, xlake_client, tools=None):
 def __init__(
     self,
     llm: ChatOpenAI,
-    xlake_client: XLakeClient,
+    acmestore_client: AcmeStoreClient,
 ):
     """
     Initialize agent with dependencies.
     
     Args:
         llm: LangChain LLM for reasoning and generation
-        xlake_client: Client for chart operations and storage
+        acmestore_client: Client for chart operations and storage
     """
     ...
 ```
@@ -817,7 +817,7 @@ def __init__(
 
 ```python
 # Singleton - reuse HTTP connection pool
-xlake_client = providers.Singleton(XLakeClient, ...)
+acmestore_client = providers.Singleton(AcmeStoreClient, ...)
 
 # Singleton - reuse LLM instance
 llm = providers.Singleton(ChatOpenAI, ...)
@@ -833,24 +833,24 @@ database = providers.Singleton(Database, ...)
 chart_selection_agent = providers.Factory(ChartSelectionAgent, ...)
 
 # Factory - new service per request
-visualization_service = providers.Factory(VisualizationService, ...)
+visualization_service = providers.Factory(InteractionService, ...)
 ```
 
 ### 5. Keep Settings Classes Simple
 
 ```python
 # Good - focused, clear
-class XLakeSettings(BaseSettings):
+class AcmeStoreSettings(BaseSettings):
     base_url: str
     api_key: str
     timeout: float = 30.0
     
     class Config:
-        env_prefix = "XLAKE_"
+        env_prefix = "ACMESTORE_"
 
 # Bad - mixing concerns
 class Settings(BaseSettings):
-    xlake_url: str
+    acmestore_url: str
     db_url: str
     auth_secret: str
     # Too many responsibilities
@@ -877,14 +877,14 @@ wiring_config = containers.WiringConfiguration(
 
 ```python
 # Good - override specific dependencies
-with container.xlake_client.override(mock_client):
+with container.acmestore_client.override(mock_client):
     service = container.visualization_service()
     # Test with mocked client
 
 # Bad - creating instances manually in tests
-service = VisualizationService(
+service = InteractionService(
     agent=mock_agent,
-    xlake_client=mock_client,
+    acmestore_client=mock_client,
 )  # Bypasses container, loses DI benefits
 ```
 
@@ -895,7 +895,7 @@ service = VisualizationService(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    client = app.container.xlake_client()
+    client = app.container.acmestore_client()
     await client.initialize()
     
     yield
@@ -905,7 +905,7 @@ async def lifespan(app: FastAPI):
 
 # Bad - no cleanup
 app = FastAPI()
-client = app.container.xlake_client()
+client = app.container.acmestore_client()
 # Connections leak on shutdown
 ```
 
@@ -918,8 +918,8 @@ client = app.container.xlake_client()
 def create_search_tool(vector_store: VectorStore):
     """Factory function for search tool"""
     return Tool(
-        name="search_viz_rules",
-        description="Search visualization design rules",
+        name="search_rules",
+        description="Search interaction design rules",
         func=vector_store.search,
     )
 
@@ -1028,4 +1028,4 @@ uv add --dev pytest-mock
 
 **Document Version**: 1.0  
 **Last Updated**: 2026-02-04  
-**Author**: ActBI Engineering Team
+**Author**: Acme Inc. Engineering Team
