@@ -66,8 +66,8 @@ class AcmeStoreClient:
             timeout=timeout,
         )
     
-    async def get_chart(self, chart_id: str) -> dict:
-        response = await self.client.get(f"/charts/{chart_id}")
+    async def get_element(self, element_id: str) -> dict:
+        response = await self.client.get(f"/elements/{element_id}")
         return response.json()
     
     async def close(self):
@@ -105,8 +105,8 @@ class ApplicationContainer(containers.DeclarativeContainer):
     )
     
     # Factory - new agent per request
-    chart_selection_agent = providers.Factory(
-        ChartSelectionAgent,
+    element_selection_agent = providers.Factory(
+        ElementSelectionAgent,
         llm=llm,
         acmestore_client=acmestore_client,  # Injects the singleton
     )
@@ -156,7 +156,7 @@ User Request → FastAPI Route
                     ↓
          Container looks up visualization_service
                     ↓
-    Needs: chart_selection_agent + acmestore_client
+    Needs: element_selection_agent + acmestore_client
                     ↓
     ┌─────────────┴─────────────┐
     ↓                           ↓
@@ -171,7 +171,7 @@ Create ChatOpenAI(...)
     ↓
 Get acmestore_client (reuse singleton)
     ↓
-Create ChartSelectionAgent(...)
+Create ElementSelectionAgent(...)
     ↓
     └─────────────┬─────────────┘
                   ↓
@@ -185,15 +185,15 @@ Create ChartSelectionAgent(...)
 ### Pattern 1: Agent with Injected Dependencies
 
 ```python
-# agents/chart_selection_agent.py
+# agents/element_selection_agent.py
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate
 from acmestore.client import AcmeStoreClient
 from typing import List
 
-class ChartSelectionAgent:
-    """Chart selection agent with injected dependencies"""
+class ElementSelectionAgent:
+    """Element selection agent with injected dependencies"""
     
     def __init__(
         self,
@@ -206,7 +206,7 @@ class ChartSelectionAgent:
         
         Args:
             llm: LangChain LLM instance for reasoning
-            acmestore_client: AcmeStore client for chart operations
+            acmestore_client: AcmeStore client for element operations
             tools: List of LangChain tools for the agent
         """
         self.llm = llm
@@ -227,20 +227,20 @@ class ChartSelectionAgent:
             prompt=self.prompt,
         )
     
-    async def select_chart(
+    async def select_element(
         self,
         query: str,
         data_schema: dict,
     ) -> dict:
         """
-        Select optimal chart type for query and data.
+        Select optimal element type for query and data.
         
         Args:
             query: Natural language query from user
             data_schema: Schema of the data to visualize
             
         Returns:
-            Chart configuration with type and settings
+            Element configuration with type and settings
         """
         result = await self.agent.ainvoke({
             "input": query,
@@ -254,7 +254,7 @@ class ChartSelectionAgent:
 
 ```python
 # services/visualization_service.py
-from agents.chart_selection_agent import ChartSelectionAgent
+from agents.element_selection_agent import ElementSelectionAgent
 from acmestore.client import AcmeStoreClient
 
 class InteractionService:
@@ -262,14 +262,14 @@ class InteractionService:
     
     def __init__(
         self,
-        agent: ChartSelectionAgent,
+        agent: ElementSelectionAgent,
         acmestore_client: AcmeStoreClient,
     ):
         """
         Initialize service with dependencies.
         
         Args:
-            agent: Agent for chart selection logic
+            agent: Agent for element selection logic
             acmestore_client: Client for AcmeStore operations
         """
         self.agent = agent
@@ -288,18 +288,18 @@ class InteractionService:
             data_schema: Structure of data to visualize
             
         Returns:
-            Saved chart configuration
+            Saved element configuration
         """
         # Use injected agent for selection
-        chart_config = await self.agent.select_chart(
+        element_config = await self.agent.select_element(
             query=query,
             data_schema=data_schema,
         )
         
         # Use injected client to save
-        saved_chart = await self.acmestore_client.create_chart(chart_config)
+        saved_element = await self.acmestore_client.create_element(element_config)
         
-        return saved_chart
+        return saved_element
 ```
 
 ### Pattern 3: Container Configuration
@@ -310,7 +310,7 @@ from dependency_injector import containers, providers
 from acmestore.config import get_acmestore_settings
 from acmestore.client import AcmeStoreClient
 from agents.config import get_agent_settings
-from agents.chart_selection_agent import ChartSelectionAgent
+from agents.element_selection_agent import ElementSelectionAgent
 from services.visualization_service import InteractionService
 from langchain_openai import ChatOpenAI
 
@@ -351,9 +351,9 @@ class ApplicationContainer(containers.DeclarativeContainer):
     
     # ==================== Agents ====================
     
-    # Chart Selection Agent (Factory - new per request)
-    chart_selection_agent = providers.Factory(
-        ChartSelectionAgent,
+    # Element Selection Agent (Factory - new per request)
+    element_selection_agent = providers.Factory(
+        ElementSelectionAgent,
         llm=llm,  # Injects singleton LLM
         acmestore_client=acmestore_client,  # Injects singleton client
         tools=tools,
@@ -364,14 +364,14 @@ class ApplicationContainer(containers.DeclarativeContainer):
     # Visualization Service (Factory - new per request)
     visualization_service = providers.Factory(
         InteractionService,
-        agent=chart_selection_agent,  # Creates new agent
+        agent=element_selection_agent,  # Creates new agent
         acmestore_client=acmestore_client,  # Injects singleton client
     )
     
     # ==================== Wiring ====================
     wiring_config = containers.WiringConfiguration(
         modules=[
-            "api.routes.charts",
+            "api.routes.elements",
             "api.routes.dashboards",
             "api.routes.visualizations",
         ]
@@ -381,7 +381,7 @@ class ApplicationContainer(containers.DeclarativeContainer):
 ### Pattern 4: FastAPI Route with Dependency Injection
 
 ```python
-# api/routes/charts.py
+# api/routes/elements.py
 from fastapi import APIRouter, Depends
 from dependency_injector.wiring import inject, Provide
 from containers import ApplicationContainer
@@ -390,9 +390,9 @@ from acmestore.client import AcmeStoreClient
 
 router = APIRouter()
 
-@router.post("/charts/select")
+@router.post("/elements/select")
 @inject
-async def select_chart(
+async def select_element(
     query: str,
     data_schema: dict,
     visualization_service: InteractionService = Depends(
@@ -400,7 +400,7 @@ async def select_chart(
     ),
 ):
     """
-    Select and create chart interaction.
+    Select and create element interaction.
     
     The visualization_service is automatically injected by the DI container.
     It comes with all its dependencies (agent, AcmeStore client, LLM, etc.) 
@@ -413,22 +413,22 @@ async def select_chart(
     return result
 
 
-@router.get("/charts/{chart_id}")
+@router.get("/elements/{element_id}")
 @inject
-async def get_chart(
-    chart_id: str,
+async def get_element(
+    element_id: str,
     acmestore_client: AcmeStoreClient = Depends(
         Provide[ApplicationContainer.acmestore_client]
     ),
 ):
     """
-    Get chart by ID.
+    Get element by ID.
     
     Only needs AcmeStore client, not the full service stack.
     Container provides just what we need.
     """
-    chart = await acmestore_client.get_chart(chart_id)
-    return chart
+    element = await acmestore_client.get_element(element_id)
+    return element
 ```
 
 ### Pattern 5: FastAPI Application Setup
@@ -475,8 +475,8 @@ def create_app() -> FastAPI:
     app.container = container
     
     # Import and register routes
-    from api.routes import charts, dashboards
-    app.include_router(charts.router, prefix="/api")
+    from api.routes import elements, dashboards
+    app.include_router(elements.router, prefix="/api")
     app.include_router(dashboards.router, prefix="/api")
     
     return app
@@ -544,9 +544,9 @@ def acmestore_client(container):
     return container.acmestore_client()
 
 @pytest.fixture
-def chart_selection_agent(container):
+def element_selection_agent(container):
     """Get agent with mocked dependencies"""
-    return container.chart_selection_agent()
+    return container.element_selection_agent()
 
 @pytest.fixture
 def visualization_service(container):
@@ -560,36 +560,36 @@ def visualization_service(container):
 # tests/test_agents.py
 import pytest
 
-def test_chart_selection(chart_selection_agent):
+def test_element_selection(element_selection_agent):
     """
-    Test chart selection with injected agent.
+    Test element selection with injected agent.
     
     Agent has mocked AcmeStore client and real (test) LLM from TestContainer.
     """
-    result = chart_selection_agent.select_chart(
+    result = element_selection_agent.select_element(
         query="Show sales by region",
         data_schema={"columns": ["region", "sales"]}
     )
     
     assert result is not None
-    assert "chart_type" in result
+    assert "element_type" in result
 
 
-def test_chart_selection_custom_mock(container, mocker):
+def test_element_selection_custom_mock(container, mocker):
     """
     Test with custom mock overriding container dependency.
     """
     # Create custom mock
     mock_acmestore = mocker.Mock()
-    mock_acmestore.create_chart.return_value = {"id": "123", "type": "bar"}
+    mock_acmestore.create_element.return_value = {"id": "123", "type": "bar"}
     
     # Override specific dependency for this test
     with container.acmestore_client.override(mock_acmestore):
-        agent = container.chart_selection_agent()
-        result = agent.select_chart("test query", {})
+        agent = container.element_selection_agent()
+        result = agent.select_element("test query", {})
         
         # Verify mock was called
-        mock_acmestore.create_chart.assert_called_once()
+        mock_acmestore.create_element.assert_called_once()
 
 
 def test_visualization_service(visualization_service, mocker):
@@ -700,7 +700,7 @@ class MinimalAcmeStoreContainer(containers.DeclarativeContainer):
 # Usage in script
 container = MinimalAcmeStoreContainer()
 client = container.acmestore_client()
-result = client.get_chart("chart-123")
+result = client.get_element("element-123")
 ```
 
 ### Development Container
@@ -746,7 +746,7 @@ acme/
 ├── agents/
 │   ├── __init__.py
 │   ├── config.py                    # AgentSettings
-│   ├── chart_selection_agent.py    # Agents
+│   ├── element_selection_agent.py    # Agents
 │   └── refinement_agent.py
 │
 ├── database/
@@ -762,7 +762,7 @@ acme/
 │   ├── __init__.py
 │   └── routes/
 │       ├── __init__.py
-│       ├── charts.py               # Routes with @inject
+│       ├── elements.py               # Routes with @inject
 │       ├── dashboards.py
 │       └── visualizations.py
 │
@@ -808,7 +808,7 @@ def __init__(
     
     Args:
         llm: LangChain LLM for reasoning and generation
-        acmestore_client: Client for chart operations and storage
+        acmestore_client: Client for element operations and storage
     """
     ...
 ```
@@ -830,7 +830,7 @@ database = providers.Singleton(Database, ...)
 
 ```python
 # Factory - new agent per request
-chart_selection_agent = providers.Factory(ChartSelectionAgent, ...)
+element_selection_agent = providers.Factory(ElementSelectionAgent, ...)
 
 # Factory - new service per request
 visualization_service = providers.Factory(InteractionService, ...)
@@ -862,7 +862,7 @@ class Settings(BaseSettings):
 # Good - explicit module list
 wiring_config = containers.WiringConfiguration(
     modules=[
-        "api.routes.charts",
+        "api.routes.elements",
         "api.routes.dashboards",
     ]
 )
@@ -940,7 +940,7 @@ class ApplicationContainer(containers.DeclarativeContainer):
     
     # Agent gets tools list
     agent = providers.Factory(
-        ChartSelectionAgent,
+        ElementSelectionAgent,
         llm=llm,
         tools=tools,
     )
@@ -979,15 +979,15 @@ class ApplicationContainer(containers.DeclarativeContainer):
     )
     
     # Level 3: Repository (depends on database)
-    chart_repository = providers.Singleton(
-        ChartRepository,
+    element_repository = providers.Singleton(
+        ElementRepository,
         database=database,
     )
     
     # Level 4: Service (depends on repository)
-    chart_service = providers.Factory(
-        ChartService,
-        repository=chart_repository,
+    element_service = providers.Factory(
+        ElementService,
+        repository=element_repository,
     )
 ```
 

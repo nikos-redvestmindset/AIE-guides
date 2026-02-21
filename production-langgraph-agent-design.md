@@ -155,24 +155,24 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 
-class VizSelectionState(TypedDict):
-    """State for the chart-selection sub-agent only."""
+class ElementSelectionState(TypedDict):
+    """State for the element-selection sub-agent only."""
     messages: Annotated[list[AnyMessage], add_messages]
     nlp_query: str
     output_schema: dict[str, Any]
     materialized_data: list[dict[str, Any]]
-    structured_response: VizSelectionResponseSchema | None
+    structured_response: ElementSelectionResponseSchema | None
 
 
-class VizRefinementState(TypedDict):
+class ElementRefinementState(TypedDict):
     """State for the refinement sub-agent only."""
     messages: Annotated[list[AnyMessage], add_messages]
-    selection_result: VizSelectionResponseSchema | None
+    selection_result: ElementSelectionResponseSchema | None
     nlp_query: str
     output_schema: dict[str, Any]
     materialized_data: list[dict[str, Any]]
     conversation_id: str | None
-    structured_response: VizRefinementResponseSchema | None
+    structured_response: ElementRefinementResponseSchema | None
 ```
 
 #### Input / Output / Graph State pattern (recommended for multi-stage agents)
@@ -180,7 +180,7 @@ class VizRefinementState(TypedDict):
 For orchestrating parent graphs that wire multiple sub-agents, use the `StateGraph(State, input=Input, output=Output)` pattern (as seen in [open_deep_research](https://github.com/langchain-ai/open_deep_research)):
 
 ```python
-class VizDesignerInput(TypedDict):
+class AcmeAgentInput(TypedDict):
     """What the caller provides when invoking the pipeline."""
     messages: Annotated[list[AnyMessage], add_messages]
     nlp_query: str
@@ -189,12 +189,12 @@ class VizDesignerInput(TypedDict):
     conversation_id: str | None
 
 
-class VizDesignerOutput(TypedDict):
+class AcmeAgentOutput(TypedDict):
     """What the caller receives back from the pipeline."""
-    agent_response: AgentChartResponse | None
+    agent_response: AgentElementResponse | None
 
 
-class VizDesignerGraphState(TypedDict):
+class AcmeAgentGraphState(TypedDict):
     """Internal orchestration state — includes bridge fields hidden from callers.
 
     Bridge fields (e.g. ``selection_result``) carry intermediate data
@@ -208,9 +208,9 @@ class VizDesignerGraphState(TypedDict):
     materialized_data: list[dict[str, Any]]
     conversation_id: str | None
     # ---- Bridge (internal, hidden from caller) ----
-    selection_result: VizSelectionResponseSchema | None
+    selection_result: ElementSelectionResponseSchema | None
     # ---- Output ----
-    agent_response: AgentChartResponse | None
+    agent_response: AgentElementResponse | None
 ```
 
 **Why three TypedDicts?**
@@ -228,7 +228,7 @@ This pattern hides internal wiring (bridge fields like `selection_result`) from 
 Agent using `create_agent()` for a single-stage tool-calling pattern. Even simple agents extend `AgentBuilder` and implement `_build()`:
 
 ```python
-# agents/chart_selector/agent.py
+# agents/element_selector/agent.py
 from __future__ import annotations
 
 from langchain.agents import create_agent
@@ -236,12 +236,12 @@ from langgraph.graph.state import CompiledStateGraph
 
 from agents.base import AgentBuilder
 from agents.models import AgentContext
-from agents.chart_selector.config import ChartSelectorSettings
-from agents.chart_selector.schemas import ChartSelectionState
+from agents.element_selector.config import ElementSelectorSettings
+from agents.element_selector.schemas import ElementSelectionState
 
 
-class ChartSelectionAgent(AgentBuilder):
-    """Chart selection agent using simple tool-calling pattern.
+class ElementSelectionAgent(AgentBuilder):
+    """Element selection agent using simple tool-calling pattern.
 
     This agent uses ``create_agent()`` for straightforward tool-calling.
     Suitable when:
@@ -254,7 +254,7 @@ class ChartSelectionAgent(AgentBuilder):
 
     def __init__(
         self,
-        settings: ChartSelectorSettings,
+        settings: ElementSelectorSettings,
         tools: list | None = None,
     ):
         super().__init__()
@@ -271,17 +271,17 @@ class ChartSelectionAgent(AgentBuilder):
             model=self.settings.model,
             tools=self.tools,
             system_prompt=self.settings.system_prompt,
-            state_schema=ChartSelectionState,
+            state_schema=ElementSelectionState,
             response_format=self.settings.response_format,
             context_schema=AgentContext,
             debug=self.settings.debug,
-            name="chart_selection",
+            name="element_selection",
         )
 
 
 
 # Usage: consumers call compile(), never _build()
-selector = ChartSelectionAgent(settings=settings, tools=tools)
+selector = ElementSelectionAgent(settings=settings, tools=tools)
 pipeline = selector.compile()      # cached CompiledStateGraph
 result = await pipeline.ainvoke(
     {"messages": [], "nlp_query": "Show revenue over time", ...},
@@ -311,11 +311,11 @@ from agents.base import AgentBuilder
 from agents.models import AgentContext
 from agents.acme_agent.config import AcmeAgentSettings
 from agents.acme_agent.schemas import (
-    VizDesignerGraphState,
-    VizDesignerInput,
-    VizDesignerOutput,
-    VizRefinementState,
-    VizSelectionState,
+    AcmeAgentGraphState,
+    AcmeAgentInput,
+    AcmeAgentOutput,
+    ElementRefinementState,
+    ElementSelectionState,
     # ... response schemas ...
 )
 
@@ -324,7 +324,7 @@ if TYPE_CHECKING:
 
 
 class AcmeAgent(AgentBuilder):
-    """2-stage interaction pipeline: Selection -> Refinement.
+    """2-stage interaction pipeline: Analysis -> Refinement.
 
     Uses the LangGraph "invoke from a node" subgraph pattern so each
     sub-agent operates on its own focused state while the parent graph
@@ -333,7 +333,7 @@ class AcmeAgent(AgentBuilder):
 
     Pipeline::
 
-        START -> selection -> transform -> refinement -> END
+        START -> analysis -> transform -> refinement -> END
     """
 
     def __init__(
@@ -357,9 +357,9 @@ class AcmeAgent(AgentBuilder):
         from ``open_deep_research`` to hide bridge fields from callers.
         """
         graph = StateGraph(
-            VizDesignerGraphState,          # internal (includes bridges)
-            input=VizDesignerInput,         # what the caller provides
-            output=VizDesignerOutput,       # what the caller receives
+            AcmeAgentGraphState,          # internal (includes bridges)
+            input=AcmeAgentInput,         # what the caller provides
+            output=AcmeAgentOutput,       # what the caller receives
             context_schema=AgentContext,
         )
 
@@ -380,12 +380,12 @@ class AcmeAgent(AgentBuilder):
 
     async def _run_selection(
         self,
-        state: VizDesignerGraphState,
+        state: AcmeAgentGraphState,
         config: RunnableConfig,
     ) -> dict[str, Any]:
         """Node: invoke the selection sub-agent.
 
-        Transform parent state -> VizSelectionState,
+        Transform parent state -> ElementSelectionState,
         invoke sub-agent, transform result -> parent state update.
         Config propagates AgentContext automatically.
         """
@@ -407,7 +407,7 @@ class AcmeAgent(AgentBuilder):
 
     def _selection_to_refinement(
         self,
-        state: VizDesignerGraphState,
+        state: AcmeAgentGraphState,
     ) -> dict[str, Any]:
         """Node: pure transform — format selection output for refinement.
 
@@ -425,7 +425,7 @@ class AcmeAgent(AgentBuilder):
 
     async def _run_refinement(
         self,
-        state: VizDesignerGraphState,
+        state: AcmeAgentGraphState,
         config: RunnableConfig,
     ) -> dict[str, Any]:
         """Node: invoke refinement sub-agent and build final response.
@@ -448,8 +448,8 @@ class AcmeAgent(AgentBuilder):
             config=config,
         )
 
-        # Build final AgentChartResponse from refinement output
-        agent_response = self._assemble_chart_response(
+        # Build final AgentElementResponse from refinement output
+        agent_response = self._assemble_element_response(
             refinement_result=result["structured_response"],
             materialized_data=state.get("materialized_data", []),
             output_schema=state.get("output_schema", {}),
@@ -462,14 +462,14 @@ class AcmeAgent(AgentBuilder):
     # ------------------------------------------------------------------
 
     def _create_selection_stage(self) -> CompiledStateGraph:
-        """Create the chart-selection sub-agent."""
+        """Create the element-selection sub-agent."""
         stage = self.settings.get_stage_settings("selection")
         return create_agent(
             model=stage.model,
             tools=self._tools,
             system_prompt=stage.prompt or SELECTION_SYSTEM_PROMPT,
-            state_schema=VizSelectionState,      # focused state
-            response_format=VizSelectionResponseSchema,
+            state_schema=ElementSelectionState,      # focused state
+            response_format=ElementSelectionResponseSchema,
             context_schema=AgentContext,
             debug=self.settings.debug,
             name="selection",
@@ -482,8 +482,8 @@ class AcmeAgent(AgentBuilder):
             model=stage.model,
             tools=self._tools,
             system_prompt=stage.prompt or REFINEMENT_SYSTEM_PROMPT,
-            state_schema=VizRefinementState,     # focused state
-            response_format=VizRefinementResponseSchema,
+            state_schema=ElementRefinementState,     # focused state
+            response_format=ElementRefinementResponseSchema,
             context_schema=AgentContext,
             debug=self.settings.debug,
             name="refinement",
@@ -492,7 +492,7 @@ class AcmeAgent(AgentBuilder):
 
 **Key patterns demonstrated:**
 
-1. **`input=` / `output=` schema separation** — Callers only see `VizDesignerInput` and `VizDesignerOutput`; bridge fields like `selection_result` are hidden inside `VizDesignerGraphState`.
+1. **`input=` / `output=` schema separation** — Callers only see `AcmeAgentInput` and `AcmeAgentOutput`; bridge fields like `selection_result` are hidden inside `AcmeAgentGraphState`.
 
 2. **"Invoke from a node"** — Each node transforms parent state into a sub-agent's focused state, invokes the sub-agent, and maps the result back to a parent state update. Sub-agents have completely different schemas from the parent.
 
@@ -502,7 +502,7 @@ class AcmeAgent(AgentBuilder):
 
 5. **Pure transform nodes** — `_selection_to_refinement` is a data-transformation node (no LLM call) that bridges the output of one sub-agent into the input format of the next.
 
-6. **Response assembly as a private method** — `_assemble_chart_response()` is called from the refinement node, not a separate graph node. This keeps `refinement_result` as a local variable and avoids polluting the parent state.
+6. **Response assembly as a private method** — `_assemble_element_response()` is called from the refinement node, not a separate graph node. This keeps `refinement_result` as a local variable and avoids polluting the parent state.
 
 ### 5. Multi-Agent System
 
@@ -518,7 +518,7 @@ from langgraph.graph import StateGraph, START, END
 from .base import AgentBuilder
 from .state import InteractionState
 from .visualization_designer import AcmeAgent
-from .chart_selector import ChartSelectionAgent
+from .element_selector import ElementSelectionAgent
 
 
 class AgentCoordinator(AgentBuilder):
@@ -540,7 +540,7 @@ class AgentCoordinator(AgentBuilder):
         self,
         supervisor_llm: ChatOpenAI,
         designer_agent: AcmeAgent,
-        selector_agent: ChartSelectionAgent,
+        selector_agent: ElementSelectionAgent,
         verbose: bool = False,
     ):
         """
@@ -549,7 +549,7 @@ class AgentCoordinator(AgentBuilder):
         Args:
             supervisor_llm: LLM for routing decisions
             designer_agent: Full pipeline agent for complex requests
-            selector_agent: Fast agent for simple chart selection
+            selector_agent: Fast agent for simple element selection
             verbose: Enable detailed logging
         """
         self.supervisor_llm = supervisor_llm
@@ -603,7 +603,7 @@ class AgentCoordinator(AgentBuilder):
         complexity_prompt = f"""Analyze this interaction request:
 {last_message}
 
-Is this a simple chart selection or complex interaction design?
+Is this a simple element selection or complex interaction design?
 Respond with: SIMPLE or COMPLEX"""
 
         response = self.supervisor_llm.invoke([("human", complexity_prompt)])
@@ -654,7 +654,7 @@ Wire all agents through DI container:
 ```python
 # containers.py
 from dependency_injector import containers, providers
-from agents.chart_selector import ChartSelectionAgent
+from agents.element_selector import ElementSelectionAgent
 from agents.visualization_designer import AcmeAgent
 from agents.agent_coordinator import AgentCoordinator
 from agents.config import get_agent_settings
@@ -713,8 +713,8 @@ class AgentsContainer(containers.DeclarativeContainer):
         create_analyze_schema_tool,
     )
 
-    validate_chart = providers.Factory(
-        create_validate_chart_tool,
+    validate_element = providers.Factory(
+        create_validate_element_tool,
     )
 
     # Create tool lists for different agents
@@ -726,13 +726,13 @@ class AgentsContainer(containers.DeclarativeContainer):
     designer_tools = providers.List(
         search_rules,
         analyze_schema,
-        validate_chart,
+        validate_element,
     )
 
     # Agents (Factories - new instance per request)
 
-    chart_selection_agent = providers.Factory(
-        ChartSelectionAgent,
+    element_selection_agent = providers.Factory(
+        ElementSelectionAgent,
         llm=fast_llm,  # Use fast LLM for simple selection
         tools=selector_tools,
         max_iterations=agent_settings.provided.max_iterations,
@@ -742,7 +742,7 @@ class AgentsContainer(containers.DeclarativeContainer):
     visualization_designer = providers.Factory(
         AcmeAgent,
         llm=main_llm,  # Use main LLM for complex design
-        chart_selector=chart_selection_agent,
+        element_selector=element_selection_agent,
         tools=designer_tools,
         max_refinement_iterations=3,
         verbose=agent_settings.provided.verbose,
@@ -752,7 +752,7 @@ class AgentsContainer(containers.DeclarativeContainer):
         AgentCoordinator,
         supervisor_llm=fast_llm,  # Fast routing decisions
         designer_agent=visualization_designer,
-        selector_agent=chart_selection_agent,
+        selector_agent=element_selection_agent,
         verbose=agent_settings.provided.verbose,
     )
 
@@ -770,8 +770,8 @@ class TestAgentsContainer(containers.DeclarativeContainer):
     tools = providers.List()
 
     # Agent with mocked dependencies
-    chart_selection_agent = providers.Factory(
-        ChartSelectionAgent,
+    element_selection_agent = providers.Factory(
+        ElementSelectionAgent,
         llm=llm,
         tools=tools,
         verbose=True,
@@ -808,7 +808,7 @@ async def create_visualization(
     The coordinator will:
     1. Analyze request complexity
     2. Route to appropriate agent
-    3. Return chart configuration
+    3. Return element configuration
     """
     try:
         # Build the agent graph
@@ -825,17 +825,17 @@ async def create_visualization(
         # Invoke agent
         result = await agent_graph.ainvoke(initial_state)
 
-        # Extract chart config
-        chart_config = result.get("chart_config")
+        # Extract element config
+        element_config = result.get("element_config")
 
-        if not chart_config:
+        if not element_config:
             raise HTTPException(
                 status_code=500,
-                detail="Agent failed to generate chart configuration"
+                detail="Agent failed to generate element configuration"
             )
 
         return {
-            "chart_config": chart_config,
+            "element_config": element_config,
             "reasoning": result.get("reasoning"),
         }
 
@@ -846,16 +846,16 @@ async def create_visualization(
         )
 
 
-@router.post("/select-chart")
+@router.post("/select-element")
 @inject
-async def select_chart(
-    request: ChartSelectionRequest,
-    selector: ChartSelectionAgent = Depends(
-        Provide[AgentsContainer.chart_selection_agent]
+async def select_element(
+    request: ElementSelectionRequest,
+    selector: ElementSelectionAgent = Depends(
+        Provide[AgentsContainer.element_selection_agent]
     ),
 ):
     """
-    Simple chart selection endpoint using selector agent directly.
+    Simple element selection endpoint using selector agent directly.
 
     Bypasses coordinator for known simple tasks.
     """
@@ -871,8 +871,8 @@ async def select_chart(
     result = await agent.ainvoke(initial_state)
 
     return {
-        "chart_type": result.get("chart_type"),
-        "chart_config": result.get("chart_config"),
+        "element_type": result.get("element_type"),
+        "element_config": result.get("element_config"),
         "reasoning": result.get("reasoning"),
     }
 ```
@@ -907,7 +907,7 @@ async def lifespan(app: FastAPI):
     container.wire(
         modules=[
             "api.routes.visualizations",
-            "api.routes.charts",
+            "api.routes.elements",
         ]
     )
 
@@ -927,9 +927,9 @@ app = FastAPI(
 app.container = container
 
 # Include routers
-from api.routes import visualizations, charts
+from api.routes import visualizations, elements
 app.include_router(visualizations.router)
-app.include_router(charts.router)
+app.include_router(elements.router)
 ```
 
 ### 9. Testing Patterns
@@ -942,7 +942,7 @@ import pytest
 from unittest.mock import AsyncMock, Mock, patch
 from dependency_injector import containers, providers
 
-from agents.chart_selector import ChartSelectionAgent
+from agents.element_selector import ElementSelectionAgent
 from agents.state import InteractionState
 
 
@@ -954,11 +954,11 @@ class MockChatOpenAI:
 
     def invoke(self, messages):
         """Return mock response"""
-        return Mock(content='{"chart_type": "bar", "config": {}}')
+        return Mock(content='{"element_type": "bar", "config": {}}')
 
 
-class TestChartSelectionAgent:
-    """Test suite for chart selection agent"""
+class TestElementSelectionAgent:
+    """Test suite for element selection agent"""
 
     @pytest.fixture
     def mock_llm(self):
@@ -973,7 +973,7 @@ class TestChartSelectionAgent:
     @pytest.fixture
     def agent(self, mock_llm, mock_tools):
         """Provide agent with mocked dependencies"""
-        return ChartSelectionAgent(
+        return ElementSelectionAgent(
             llm=mock_llm,
             tools=mock_tools,
             verbose=True,
@@ -998,17 +998,17 @@ class TestChartSelectionAgent:
         runnable = agent.compile()
 
         initial_state: InteractionState = {
-            "messages": [("human", "Create a bar chart")],
+            "messages": [("human", "Create a element")],
             "data_schema": {"x": "string", "y": "number"},
             "sample_data": [{"x": "A", "y": 10}],
         }
 
         # Mock the actual agent execution
         with patch.object(runnable, 'ainvoke', new=AsyncMock(
-            return_value={"chart_type": "bar"}
+            return_value={"element_type": "bar"}
         )):
             result = await runnable.ainvoke(initial_state)
-            assert result["chart_type"] == "bar"
+            assert result["element_type"] == "bar"
 
 
 class TestAcmeAgent:
@@ -1073,14 +1073,14 @@ async def test_end_to_end_interaction_flow():
 
     # Test invocation
     result = await graph.ainvoke({
-        "messages": [("human", "Create a bar chart")],
+        "messages": [("human", "Create a element")],
         "data_schema": {"x": "string", "y": "number"},
         "sample_data": [{"x": "A", "y": 10}],
         "reasoning": None,
     })
 
     # Verify result
-    assert result.get("chart_config") is not None
+    assert result.get("element_config") is not None
     assert result.get("reasoning") is not None
 ```
 
@@ -1088,7 +1088,7 @@ async def test_end_to_end_interaction_flow():
 
 For complex agents, use Pydantic Settings to encapsulate all configuration in a single object. This provides type safety, validation, and a clean agent interface.
 
-**Convention**: All agent settings use the `AGENT_<AGENT_NAME>_` prefix for environment variables to maintain consistency across the codebase (e.g., `AGENT_ACME_`, `AGENT_CHART_SELECTOR_`).
+**Convention**: All agent settings use the `AGENT_<AGENT_NAME>_` prefix for environment variables to maintain consistency across the codebase (e.g., `AGENT_ACME_`, `AGENT_ELEMENT_SELECTOR_`).
 
 #### Pattern: Agent-Specific Settings
 
@@ -1197,20 +1197,20 @@ def get_acme_agent_settings() -> AcmeAgentSettings:
 
 
 # Example: Another agent's settings following the same pattern
-class ChartSelectorSettings(BaseSettings):
+class ElementSelectorSettings(BaseSettings):
     """
-    Configuration for ChartSelectionAgent.
+    Configuration for ElementSelectionAgent.
 
-    Loaded from AGENT_CHART_SELECTOR_* environment variables.
+    Loaded from AGENT_ELEMENT_SELECTOR_* environment variables.
 
     Example .env:
-        AGENT_CHART_SELECTOR_MODEL=gpt-4o-mini
-        AGENT_CHART_SELECTOR_TEMPERATURE=0.0
-        AGENT_CHART_SELECTOR_MAX_ITERATIONS=5
+        AGENT_ELEMENT_SELECTOR_MODEL=gpt-4o-mini
+        AGENT_ELEMENT_SELECTOR_TEMPERATURE=0.0
+        AGENT_ELEMENT_SELECTOR_MAX_ITERATIONS=5
     """
 
     model_config = SettingsConfigDict(
-        env_prefix="AGENT_CHART_SELECTOR_",
+        env_prefix="AGENT_ELEMENT_SELECTOR_",
         env_file=".env",
         case_sensitive=False,
     )
@@ -1222,9 +1222,9 @@ class ChartSelectorSettings(BaseSettings):
 
 
 @lru_cache
-def get_chart_selector_settings() -> ChartSelectorSettings:
-    """Get cached chart selector settings."""
-    return ChartSelectorSettings()
+def get_element_selector_settings() -> ElementSelectorSettings:
+    """Get cached element selector settings."""
+    return ElementSelectorSettings()
 ```
 
 #### Agent Implementation with Composite Config
@@ -1286,30 +1286,30 @@ class AcmeAgent(AgentBuilder):
         workflow = StateGraph(InteractionState)
 
         # Add nodes for each stage
-        workflow.add_node("select_chart", self._select_chart_node)
-        workflow.add_node("refine_chart", self._refine_chart_node)
-        workflow.add_node("style_chart", self._style_chart_node)
-        workflow.add_node("implement_chart", self._implement_chart_node)
+        workflow.add_node("select_element", self._select_element_node)
+        workflow.add_node("refine_element", self._refine_element_node)
+        workflow.add_node("style_element", self._style_element_node)
+        workflow.add_node("implement_element", self._implement_element_node)
 
         # Add edges
-        workflow.add_edge(START, "select_chart")
-        workflow.add_edge("select_chart", "refine_chart")
+        workflow.add_edge(START, "select_element")
+        workflow.add_edge("select_element", "refine_element")
         workflow.add_conditional_edges(
-            "refine_chart",
+            "refine_element",
             self._should_continue_refining,
             {
-                "continue": "refine_chart",
-                "style": "style_chart",
+                "continue": "refine_element",
+                "style": "style_element",
             }
         )
-        workflow.add_edge("style_chart", "implement_chart")
-        workflow.add_edge("implement_chart", END)
+        workflow.add_edge("style_element", "implement_element")
+        workflow.add_edge("implement_element", END)
 
         # Compile with debug mode from settings
         return workflow.compile(debug=self.settings.debug)
 
-    def _select_chart_node(self, state: InteractionState) -> dict:
-        """Node: Select initial chart type"""
+    def _select_element_node(self, state: InteractionState) -> dict:
+        """Node: Select initial element type"""
         from langchain.chat_models import init_chat_model
 
         # Get stage-specific settings
@@ -1326,12 +1326,12 @@ class AcmeAgent(AgentBuilder):
         # ...
 
         return {
-            "chart_type": "bar",
-            "reasoning": f"Selected bar chart using {stage_settings.model}",
+            "element_type": "bar",
+            "reasoning": f"Selected element using {stage_settings.model}",
         }
 
-    def _refine_chart_node(self, state: InteractionState) -> dict:
-        """Node: Refine chart configuration"""
+    def _refine_element_node(self, state: InteractionState) -> dict:
+        """Node: Refine element configuration"""
         from langchain.chat_models import init_chat_model
 
         # Get stage-specific settings
@@ -1350,21 +1350,21 @@ class AcmeAgent(AgentBuilder):
         # ...
 
         return {
-            "chart_config": {"refined": True},
+            "element_config": {"refined": True},
             "reasoning": f"Refined using {stage_settings.model}",
         }
 
-    def _style_chart_node(self, state: InteractionState) -> dict:
+    def _style_element_node(self, state: InteractionState) -> dict:
         """Node: Apply styling"""
         stage_settings = self.settings.get_stage_settings("styling")
         # Styling logic
-        return {"chart_config": state["chart_config"]}
+        return {"element_config": state["element_config"]}
 
-    def _implement_chart_node(self, state: InteractionState) -> dict:
+    def _implement_element_node(self, state: InteractionState) -> dict:
         """Node: Generate implementation code"""
         stage_settings = self.settings.get_stage_settings("implementation")
         # Implementation logic
-        return {"chart_config": state["chart_config"]}
+        return {"element_config": state["element_config"]}
 
     def _should_continue_refining(self, state: InteractionState) -> str:
         """Conditional: Check if more refinement needed"""
@@ -1430,7 +1430,7 @@ async def create_visualization(
     })
 
     return {
-        "chart_config": result["chart_config"],
+        "element_config": result["element_config"],
         "reasoning": result["reasoning"],
     }
 ```
@@ -1514,10 +1514,10 @@ agents/
 │   ├── prompts.py               # Prompt templates
 │   └── nodes.py                 # Optional: node functions
 │
-├── chart_selector/
-│   ├── __init__.py              # Exports ChartSelectionAgent
-│   ├── agent.py                 # ChartSelectionAgent class
-│   ├── config.py                # ChartSelectorSettings
+├── element_selector/
+│   ├── __init__.py              # Exports ElementSelectionAgent
+│   ├── agent.py                 # ElementSelectionAgent class
+│   ├── config.py                # ElementSelectorSettings
 │   └── state.py                 # State definition
 │
 └── base.py                      # AgentBuilder protocol
@@ -1572,13 +1572,13 @@ class TestAcmeAgent:
         graph = designer.compile()
 
         result = await graph.ainvoke({
-            "messages": [("human", "Create a bar chart")],
+            "messages": [("human", "Create a element")],
             "data_schema": {"x": "string", "y": "number"},
             "sample_data": [{"x": "A", "y": 10}],
             "reasoning": None,
         })
 
-        assert result["chart_type"] is not None
+        assert result["element_type"] is not None
         assert result["reasoning"] is not None
 ```
 
@@ -1719,9 +1719,9 @@ class RulesSearchToolSettings(BaseSettings):
     tool_description: str = """Search interaction design rules and best practices.
 
 Use this tool when you need to:
-- Find the best chart type for specific data characteristics
+- Find the best element type for specific data characteristics
 - Learn about interaction design principles
-- Understand when to use different chart types
+- Understand when to use different element types
 - Get guidance on data encoding, axes, colors, etc.
 
 Args:
@@ -2114,7 +2114,7 @@ class TestRulesSearchTool:
         """Test tool can be invoked"""
         tool = tool_builder.compile()
 
-        result = tool.invoke({"query": "bar chart guidelines"})
+        result = tool.invoke({"query": "element guidelines"})
 
         assert "Rule 1" in result
         assert "Rule 2" in result
@@ -2411,9 +2411,9 @@ class AgentPipeline(AgentBuilder):
 # Usage in container
 class AgentsContainer(containers.DeclarativeContainer):
     # Individual agents
-    selector = providers.Factory(ChartSelectionAgent, ...)
-    validator = providers.Factory(ChartValidator, ...)
-    formatter = providers.Factory(ChartFormatter, ...)
+    selector = providers.Factory(ElementSelectionAgent, ...)
+    validator = providers.Factory(ElementValidator, ...)
+    formatter = providers.Factory(ElementFormatter, ...)
 
     # Pipeline combining them
     agent_pipeline = providers.Factory(
@@ -2606,16 +2606,16 @@ class AcmeAgent(AgentBuilder):
 
 ```python
 # Good — each sub-agent has its own focused state
-class VizSelectionState(TypedDict):
+class ElementSelectionState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     nlp_query: str
     output_schema: dict[str, Any]
     materialized_data: list[dict[str, Any]]
-    structured_response: VizSelectionResponseSchema | None
+    structured_response: ElementSelectionResponseSchema | None
 
-class VizRefinementState(TypedDict):
+class ElementRefinementState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
-    selection_result: VizSelectionResponseSchema | None
+    selection_result: ElementSelectionResponseSchema | None
     nlp_query: str
     # ...
 
@@ -2625,7 +2625,7 @@ class MonolithicState(TypedDict):
     nlp_query: str
     selection_result: ...
     refinement_result: ...
-    chart_response: ...
+    element_response: ...
     # every field from every stage ...
 ```
 
@@ -2634,13 +2634,13 @@ class MonolithicState(TypedDict):
 ```python
 # Good — callers see narrow Input/Output; bridge fields are hidden
 graph = StateGraph(
-    VizDesignerGraphState,      # internal (includes bridge fields)
-    input=VizDesignerInput,     # what caller provides
-    output=VizDesignerOutput,   # what caller receives
+    AcmeAgentGraphState,      # internal (includes bridge fields)
+    input=AcmeAgentInput,     # what caller provides
+    output=AcmeAgentOutput,   # what caller receives
 )
 
 # Bad — exposing all internal state to callers
-graph = StateGraph(VizDesignerGraphState)   # leaks bridge fields
+graph = StateGraph(AcmeAgentGraphState)   # leaks bridge fields
 ```
 
 ### 6. Use the "Invoke from a Node" Pattern for Subgraphs
@@ -2665,14 +2665,14 @@ async def _run_selection(self, state: GraphState, config: RunnableConfig) -> dic
 
 ```python
 # Good - fully typed state
-class VizSelectionState(TypedDict):
+class ElementSelectionState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     nlp_query: str
     output_schema: dict[str, Any]
-    structured_response: VizSelectionResponseSchema | None
+    structured_response: ElementSelectionResponseSchema | None
 
 # Bad - untyped state
-class VizSelectionState(TypedDict):
+class ElementSelectionState(TypedDict):
     messages: list
     nlp_query: Any
 ```
@@ -2681,7 +2681,7 @@ class VizSelectionState(TypedDict):
 
 ```python
 class AcmeAgent(AgentBuilder):
-    """2-stage interaction pipeline: Selection -> Refinement.
+    """2-stage interaction pipeline: Analysis -> Refinement.
 
     Uses the LangGraph "invoke from a node" subgraph pattern so each
     sub-agent operates on its own focused state while the parent graph
@@ -2689,10 +2689,10 @@ class AcmeAgent(AgentBuilder):
     separation to hide internal bridge fields.
 
     Capabilities:
-    - Selects optimal chart type via tool-augmented reasoning
+    - Selects optimal element type via tool-augmented reasoning
     - Classifies data series (prominence, purpose, sentiment)
     - Generates highlights linked to insights
-    - Supports combo charts with sub-chart specs
+    - Supports combo elements with sub-element specs
 
     Limitations:
     - 2-stage only (no iterative refinement loop yet)
@@ -2752,10 +2752,10 @@ project/
 │   │   ├── prompts.py              # Prompt templates
 │   │   └── README.md               # Agent documentation
 │   │
-│   ├── chart_selector/             # Simple agent with composite config
-│   │   ├── __init__.py             # Exports ChartSelectionAgent
-│   │   ├── agent.py                # ChartSelectionAgent (_build)
-│   │   ├── config.py               # ChartSelectorSettings
+│   ├── element_selector/             # Simple agent with composite config
+│   │   ├── __init__.py             # Exports ElementSelectionAgent
+│   │   ├── agent.py                # ElementSelectionAgent (_build)
+│   │   ├── config.py               # ElementSelectorSettings
 │   │   └── schemas.py              # State definition
 │   │
 │   ├── agent_coordinator/            # Multi-agent coordinator
@@ -2778,7 +2778,7 @@ project/
 │   ├── __init__.py
 │   └── routes/
 │       ├── visualizations.py       # Interaction endpoints
-│       └── charts.py               # Chart endpoints
+│       └── elements.py             # Element endpoints
 │
 ├── tools/
 │   ├── __init__.py
@@ -2801,7 +2801,7 @@ project/
 │   │   │   ├── test_agent.py       # Agent tests
 │   │   │   ├── test_config.py      # Config tests
 │   │   │   └── test_nodes.py       # Node tests
-│   │   ├── test_chart_selector.py
+│   │   ├── test_element_selector.py
 │   │   └── test_coordinator.py
 │   └── test_integration/
 │       └── test_e2e_flow.py
